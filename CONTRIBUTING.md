@@ -8,8 +8,12 @@ Contributions are welcome.
 4. Security-sensitive changes require tests for both the allowed and denied paths.
 5. Never commit credentials, real infrastructure addresses, production principal mappings or private deployment configuration.
 
-Run the test suite with:
+Run the validation suite with:
 
 ```bash
-python -m pytest
+python -m compileall -q src tests examples
+python -m coverage run -m pytest -q
+python -m coverage report --fail-under=90
 ```
+
+Security regressions should include an adversarial test that reproduces the previous failure mode.

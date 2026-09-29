@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from .registry import RESERVED_ARGUMENT_NAMES
+
 
 def tool_input_schema(tool: dict) -> dict:
     properties = {}
     required = []
     for name, spec in tool.get("arguments", {}).items():
+        if name in RESERVED_ARGUMENT_NAMES:
+            raise ValueError(f"reserved gateway control argument: {name}")
         kind = spec["type"]
         if kind == "string":
             item = {"type": "string"}
@@ -32,7 +36,12 @@ def tool_input_schema(tool: dict) -> dict:
 
     if tool.get("confirmation", "none") == "explicit":
         properties["confirmed"] = {"type": "boolean", "default": False}
-        properties["confirmation_token"] = {"type": "string", "minLength": 32, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"}
+        properties["confirmation_token"] = {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+        }
 
     result = {"type": "object", "properties": properties, "additionalProperties": False}
     if required:

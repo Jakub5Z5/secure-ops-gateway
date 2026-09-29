@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 import secrets
@@ -8,7 +9,13 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .paths import SecurePathError, prepare_private_parent, reject_symlink_leaf
+from .paths import (
+    SecurePathError,
+    prepare_private_parent,
+    private_parent_identity,
+    reject_symlink_leaf,
+    verify_private_parent_identity,
+)
 
 
 class ConfirmationError(RuntimeError):
@@ -33,13 +40,14 @@ class SQLiteOperationGuard:
                 raise ValueError(f"{name} must be a positive integer")
         try:
             self.path = prepare_private_parent(path)
+            self._parent_identity = private_parent_identity(self.path)
         except SecurePathError as exc:
             raise ConfirmationError("confirmation database parent is unsafe") from exc
         self.ttl_seconds = ttl_seconds
         self.execution_stale_seconds = execution_stale_seconds
         self.retention_seconds = retention_seconds
         self._ensure_private_database_file()
-        with self._connect() as db:
+        with self._database() as db:
             db.execute(
                 """CREATE TABLE IF NOT EXISTS confirmations (
                     token TEXT PRIMARY KEY,
@@ -66,6 +74,8 @@ class SQLiteOperationGuard:
 
     def _ensure_private_database_file(self) -> None:
         try:
+            prepare_private_parent(self.path)
+            verify_private_parent_identity(self.path, self._parent_identity)
             reject_symlink_leaf(self.path)
         except SecurePathError as exc:
             raise ConfirmationError("confirmation database path is unsafe") from exc
@@ -86,6 +96,8 @@ class SQLiteOperationGuard:
 
     def _enforce_private_permissions(self) -> None:
         try:
+            prepare_private_parent(self.path)
+            verify_private_parent_identity(self.path, self._parent_identity)
             reject_symlink_leaf(self.path)
             os.chmod(self.path, 0o600, follow_symlinks=False)
         except FileNotFoundError:
@@ -95,6 +107,8 @@ class SQLiteOperationGuard:
 
     def _connect(self):
         try:
+            prepare_private_parent(self.path)
+            verify_private_parent_identity(self.path, self._parent_identity)
             reject_symlink_leaf(self.path)
         except SecurePathError as exc:
             raise ConfirmationError("confirmation database path is unsafe") from exc
@@ -107,6 +121,15 @@ class SQLiteOperationGuard:
             connection.close()
             raise
         return connection
+
+    @contextmanager
+    def _database(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     @staticmethod
     def operation_hash(context, tool: dict) -> str:
@@ -134,7 +157,7 @@ class SQLiteOperationGuard:
     def cleanup(self, *, now: int | None = None) -> int:
         current = int(time.time()) if now is None else int(now)
         cutoff = current - self.retention_seconds
-        with self._connect() as db:
+        with self._database() as db:
             cursor = db.execute(
                 """DELETE FROM confirmations
                    WHERE
@@ -166,7 +189,7 @@ class SQLiteOperationGuard:
         token = secrets.token_urlsafe(32)
         expires = int(time.time()) + self.ttl_seconds
         op_hash = self.operation_hash(context, tool)
-        with self._connect() as db:
+        with self._database() as db:
             db.execute(
                 """INSERT INTO confirmations (
                        token, operation_hash, principal_id, source_provider,
@@ -195,7 +218,7 @@ class SQLiteOperationGuard:
         if not isinstance(token, str) or not token:
             raise ConfirmationError("invalid confirmation token")
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 """SELECT operation_hash, principal_id, source_provider,
@@ -251,7 +274,7 @@ class SQLiteOperationGuard:
     def abort_before_execution(self, token: str) -> None:
         """Release a reservation when the executor was definitely not called."""
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             updated = db.execute(
                 """UPDATE confirmations
                    SET status='pending', started_at=NULL
@@ -263,7 +286,7 @@ class SQLiteOperationGuard:
 
     def mark_uncertain(self, token: str) -> None:
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             db.execute(
                 """UPDATE confirmations
                    SET status='uncertain', completed_at=?
@@ -279,7 +302,7 @@ class SQLiteOperationGuard:
             separators=(",", ":"),
         )
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             updated = db.execute(
                 """UPDATE confirmations
                    SET status='completed', response_json=?, completed_at=?
@@ -291,7 +314,7 @@ class SQLiteOperationGuard:
 
     def status(self, token: str, context) -> dict:
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 """SELECT principal_id, source_provider, source_subject,

@@ -30,7 +30,7 @@ An executor error after a confirmed operation starts is recorded as an `uncertai
 
 The gateway emits structured events for identity denial, authorization denial, confirmation requirements/denials, invocation start, success, failure, uncertain outcomes, and idempotent replays. Audit records intentionally exclude executor credentials and confirmation tokens.
 
-Protect the audit destination from modification and deletion by the workload being audited whenever possible. The built-in file sinks reject symlink leaves and shared-writable state directories. Pre-execution audit failure prevents execution. Post-execution audit failure never changes a successful executor result into a client-visible operation failure; route `audit_failure_handler` to an independent alerting channel.
+Protect the audit destination from modification and deletion by the workload being audited whenever possible. The built-in file sinks reject symlink leaves, shared-writable state directories, directories owned by unrelated operating-system users, and parent-directory replacement after initialization. JSONL file writes use cross-process `flock` serialization so partial writes from independent gateway processes cannot interleave. Pre-execution audit failure prevents execution. Post-execution audit failure never changes a successful executor result into a client-visible operation failure; route `audit_failure_handler` to an independent alerting channel.
 
 ## General deployment guidance
 
@@ -40,8 +40,8 @@ The example configuration is not a production security policy.
 
 ## Local state paths
 
-Do not place security-sensitive state files directly in `/tmp` or another directory writable by unrelated users. Use a dedicated directory owned by the gateway account and not writable by group or others. The built-in state components reject unsafe parent permissions and symlink paths, but deployment permissions remain part of the trust boundary.
+Do not place security-sensitive state files directly in `/tmp` or another directory writable by unrelated users. Use a dedicated directory owned by the gateway account and not writable by group or others. Existing ancestors must be owned by root or the gateway account; the final state directory must be owned by the effective gateway user. The built-in state components validate ownership, permissions, symlinks and parent identity, but deployment permissions remain part of the trust boundary.
 
 ## Resource exhaustion
 
-The default gateway admission controller limits per-source call rate and concurrent work. These limits are process-local. Replicated deployments that need a global denial-of-service boundary should use a shared limiter and enforce transport-level request-size and connection limits as well.
+The default gateway admission controller limits per-authenticated-source call rate and concurrent work before identity resolution, so unknown-but-authenticated sources are covered as well. Requests rejected by admission are not written to the normal per-request audit sink, preventing an attacker from turning rate-limit denials into unbounded audit-log growth; expose aggregate admission metrics through a separate bounded monitoring path if required. These limits are process-local. Replicated deployments that need a global denial-of-service boundary should use a shared limiter and enforce transport-level request-size and connection limits as well.
