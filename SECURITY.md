@@ -1,0 +1,47 @@
+# Security Policy
+
+Secure Ops Gateway is security-sensitive infrastructure software.
+
+## Reporting a vulnerability
+
+Do not open a public issue for a suspected vulnerability that could enable unauthorized execution, privilege escalation, authentication bypass, secret disclosure, or replay of privileged operations.
+
+Use GitHub's private vulnerability reporting feature when it is enabled for this repository. If private reporting is unavailable, contact the repository owner privately before publishing technical details.
+
+## Trust boundaries
+
+The gateway does **not** authenticate an end user by reading identity fields from a request body. A transport adapter must first authenticate the connection or token and derive a trusted `(source_provider, source_subject)` pair. `SourceContext` must contain only those transport-derived values. `StaticIdentityResolver` or another resolver then maps that authenticated source to a gateway principal.
+
+Never let a remote caller directly choose `source_provider`, `source_subject`, or a principal identifier. For OAuth, SSH, mutual TLS, local peer credentials, or another transport, bind these fields from verified transport metadata.
+
+## Executor authentication and replay protection
+
+Executor requests and responses use purpose-separated HMAC-SHA256 envelopes. Verification requires a replay protector; verification without replay protection is rejected. Responses are bound to the originating `request_id`, and the built-in Unix-socket client rejects unsigned, reflected, mismatched or replayed responses. The built-in `ReplayCache` is suitable only for a single long-running process. Multi-process, multi-host, or restart-resistant deployments should provide a shared or durable replay-protector implementation.
+
+Use a distinct random key for each trust boundary and keep executor sockets inaccessible to untrusted local users.
+
+## Confirmation state
+
+Explicit-confirmation tokens are bound to the principal, authenticated source, tool, capability, permission, concrete resource, risk level, materialized arguments, and bounded executor request. `write` and `privileged` tools require explicit confirmation by default; bypassing it requires the deliberately named `allow_unconfirmed_mutation: true` escape hatch. Confirmation state is stored with mode `0600` when using `SQLiteOperationGuard`.
+
+An executor error after a confirmed operation starts is recorded as an `uncertain` outcome. An operation left in `executing` past the configured stale interval is also converted to `uncertain`. Do not automatically retry an uncertain mutation; verify the target state first. Old terminal confirmation records are removed after the configured retention period.
+
+## Audit
+
+The gateway emits structured events for identity denial, authorization denial, confirmation requirements/denials, invocation start, success, failure, uncertain outcomes, and idempotent replays. Audit records intentionally exclude executor credentials and confirmation tokens.
+
+Protect the audit destination from modification and deletion by the workload being audited whenever possible. The built-in file sinks reject symlink leaves and shared-writable state directories. Pre-execution audit failure prevents execution. Post-execution audit failure never changes a successful executor result into a client-visible operation failure; route `audit_failure_handler` to an independent alerting channel.
+
+## General deployment guidance
+
+The project intentionally exposes bounded capabilities rather than arbitrary shell commands. Deployments are expected to keep executors isolated, use separate credentials per trust boundary, authorize every concrete resource, and require explicit confirmation for state-changing operations.
+
+The example configuration is not a production security policy.
+
+## Local state paths
+
+Do not place security-sensitive state files directly in `/tmp` or another directory writable by unrelated users. Use a dedicated directory owned by the gateway account and not writable by group or others. The built-in state components reject unsafe parent permissions and symlink paths, but deployment permissions remain part of the trust boundary.
+
+## Resource exhaustion
+
+The default gateway admission controller limits per-source call rate and concurrent work. These limits are process-local. Replicated deployments that need a global denial-of-service boundary should use a shared limiter and enforce transport-level request-size and connection limits as well.

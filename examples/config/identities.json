@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "bindings": [
+    {"provider": "example", "subject": "local-user", "principal": "alice"},
+    {"provider": "example", "subject": "viewer-user", "principal": "viewer"}
+  ]
+}

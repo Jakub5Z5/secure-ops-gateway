@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "executors": {
+    "demo": {
+      "endpoint": "unix:/run/secure-ops-gateway/demo.sock",
+      "credential": "demo-executor.key",
+      "capabilities": ["demo.status", "demo.restart"]
+    }
+  }
+}

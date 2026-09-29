@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "roles": {
+    "observer": {
+      "permissions": ["demo.read"],
+      "max_risk": "read"
+    },
+    "operator": {
+      "permissions": ["demo.read", "demo.restart"],
+      "max_risk": "write"
+    }
+  },
+  "bindings": {
+    "alice": [
+      {"role": "operator", "resources": ["demo:*"]}
+    ],
+    "viewer": [
+      {"role": "observer", "resources": ["demo:service"]}
+    ]
+  }
+}

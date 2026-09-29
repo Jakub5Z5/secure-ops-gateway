@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "tools": {
+    "demo.status": {
+      "description": "Read status from the demo executor.",
+      "capability": "demo.status",
+      "permission": "demo.read",
+      "resource": "demo:service",
+      "risk": "read",
+      "confirmation": "none",
+      "arguments": {},
+      "request": {"action": "status"}
+    },
+    "demo.restart": {
+      "description": "Restart an allowlisted demo service.",
+      "capability": "demo.restart",
+      "permission": "demo.restart",
+      "resource": "demo:{service}",
+      "risk": "write",
+      "confirmation": "explicit",
+      "arguments": {
+        "service": {"type": "string", "required": true, "enum": ["api", "worker"]}
+      },
+      "request": {"action": "restart", "service": "$arg:service"}
+    }
+  }
+}
