@@ -36,15 +36,6 @@ def payload(*, capability="demo.status", request_id="req-1", request=None):
     }
 
 
-def wait_for_path(path, timeout=2.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if path.exists():
-            return
-        time.sleep(0.01)
-    raise AssertionError("executor socket did not become ready")
-
-
 def private_socket_path(tmp_path):
     return tmp_path / "private" / "executor.sock"
 
@@ -164,9 +155,14 @@ def test_unix_server_round_trip_with_builtin_client(tmp_path):
         },
         error_handler=errors.append,
     )
-    thread = threading.Thread(target=server.serve_once, daemon=True)
+    ready = threading.Event()
+    thread = threading.Thread(
+        target=server.serve_once,
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
     thread.start()
-    wait_for_path(path)
+    assert ready.wait(2)
 
     client = UnixSocketExecutorClient(key_loader=lambda _credential: KEY)
     result = client.call(
@@ -239,9 +235,14 @@ def test_serve_forever_isolates_bad_connection_and_continues(tmp_path):
         error_handler=errors.append,
         accept_poll_seconds=0.02,
     )
-    thread = threading.Thread(target=server.serve_forever, kwargs={"stop_event": stop}, daemon=True)
+    ready = threading.Event()
+    thread = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"stop_event": stop, "ready_event": ready},
+        daemon=True,
+    )
     thread.start()
-    wait_for_path(path)
+    assert ready.wait(2)
 
     bad = sign_envelope(payload(capability="demo.forbidden", request_id="bad"), KEY)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client_socket:
@@ -272,9 +273,14 @@ def test_server_rejects_oversized_or_malformed_frames_without_signed_response(tm
         max_request_bytes=128,
         error_handler=errors.append,
     )
-    thread = threading.Thread(target=server.serve_once, daemon=True)
+    ready = threading.Event()
+    thread = threading.Thread(
+        target=server.serve_once,
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
     thread.start()
-    wait_for_path(path)
+    assert ready.wait(2)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client_socket:
         client_socket.connect(str(path))
         client_socket.sendall(b"x" * 129 + b"\n")
@@ -290,9 +296,14 @@ def test_server_rejects_oversized_or_malformed_frames_without_signed_response(tm
         {"demo.status": lambda _item: {"ok": True}},
         error_handler=errors2.append,
     )
-    thread2 = threading.Thread(target=server2.serve_once, daemon=True)
+    ready2 = threading.Event()
+    thread2 = threading.Thread(
+        target=server2.serve_once,
+        kwargs={"ready_event": ready2},
+        daemon=True,
+    )
     thread2.start()
-    wait_for_path(path2)
+    assert ready2.wait(2)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client_socket:
         client_socket.connect(str(path2))
         client_socket.sendall(b"not-json\n")
@@ -311,9 +322,14 @@ def test_server_response_size_limit_fails_closed(tmp_path):
         max_response_bytes=128,
         error_handler=errors.append,
     )
-    thread = threading.Thread(target=server.serve_once, daemon=True)
+    ready = threading.Event()
+    thread = threading.Thread(
+        target=server.serve_once,
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
     thread.start()
-    wait_for_path(path)
+    assert ready.wait(2)
 
     client = UnixSocketExecutorClient(key_loader=lambda _credential: KEY)
     with pytest.raises(ExecutorError, match="invalid JSON"):
@@ -347,6 +363,10 @@ def test_server_constructor_validation(tmp_path, monkeypatch):
     server = UnixSocketExecutorServer(path, KEY, handlers)
     with pytest.raises(TypeError, match="stop_event"):
         server.serve_forever(stop_event=object())
+    with pytest.raises(TypeError, match="ready_event"):
+        server.serve_once(ready_event=object())
+    with pytest.raises(TypeError, match="ready_event"):
+        server.serve_forever(ready_event=object())
 
     monkeypatch.setattr("secure_ops_gateway.executor.os.name", "nt")
     with pytest.raises(ExecutorError, match="POSIX"):
@@ -369,9 +389,14 @@ def test_gateway_to_executor_server_end_to_end(tmp_path):
             }
         },
     )
-    thread = threading.Thread(target=server.serve_once, daemon=True)
+    ready = threading.Event()
+    thread = threading.Thread(
+        target=server.serve_once,
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
     thread.start()
-    wait_for_path(path)
+    assert ready.wait(2)
 
     client = UnixSocketExecutorClient(key_loader=lambda _credential: KEY)
     gateway = Gateway(
@@ -511,9 +536,14 @@ def test_confirmed_gateway_marks_real_executor_handler_failure_uncertain(tmp_pat
         gateway.invoke(source, "demo.restart")
     token = challenge.value.challenge["confirmation_token"]
 
-    thread = threading.Thread(target=server.serve_once, daemon=True)
+    ready = threading.Event()
+    thread = threading.Thread(
+        target=server.serve_once,
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
     thread.start()
-    wait_for_path(path)
+    assert ready.wait(2)
     with pytest.raises(ExecutorError, match="invalid JSON"):
         gateway.invoke(
             source,

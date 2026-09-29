@@ -529,13 +529,21 @@ class UnixSocketExecutorServer:
                 ):
                     os.unlink(self.path)
 
-    def serve_once(self) -> None:
-        """Bind the socket, process one connection, and clean up the socket path."""
+    @staticmethod
+    def _validate_ready_event(ready_event) -> None:
+        if ready_event is not None and not callable(getattr(ready_event, "set", None)):
+            raise TypeError("ready_event must expose set()")
 
+    def serve_once(self, *, ready_event=None) -> None:
+        """Bind the socket, signal readiness, process one connection, and clean up."""
+
+        self._validate_ready_event(ready_event)
         if not self._serve_lock.acquire(blocking=False):
             raise ExecutorError("executor server is already running")
         try:
             with self._listener() as listener:
+                if ready_event is not None:
+                    ready_event.set()
                 listener.settimeout(self.connection_timeout_seconds)
                 connection, _ = listener.accept()
                 with connection:
@@ -546,20 +554,26 @@ class UnixSocketExecutorServer:
         finally:
             self._serve_lock.release()
 
-    def serve_forever(self, *, stop_event=None) -> None:
+    def serve_forever(self, *, stop_event=None, ready_event=None) -> None:
         """Serve connections until ``stop_event`` is set.
 
-        ``stop_event`` may be any object exposing ``is_set()``. When omitted,
-        the server runs until interrupted. Per-connection errors are isolated
-        and reported through ``error_handler`` without stopping the listener.
+        ``stop_event`` may be any object exposing ``is_set()``. ``ready_event``
+        may expose ``set()`` and is signalled only after the Unix socket is
+        listening, so supervisors and tests do not need to infer readiness from
+        the socket path alone. When ``stop_event`` is omitted, the server runs
+        until interrupted. Per-connection errors are isolated and reported
+        through ``error_handler`` without stopping the listener.
         """
 
         if stop_event is not None and not callable(getattr(stop_event, "is_set", None)):
             raise TypeError("stop_event must expose is_set()")
+        self._validate_ready_event(ready_event)
         if not self._serve_lock.acquire(blocking=False):
             raise ExecutorError("executor server is already running")
         try:
             with self._listener() as listener:
+                if ready_event is not None:
+                    ready_event.set()
                 while stop_event is None or not stop_event.is_set():
                     try:
                         connection, _ = listener.accept()
