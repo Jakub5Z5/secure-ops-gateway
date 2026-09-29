@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "tools": {
+    "service.status": {
+      "description": "Read the state of one allowlisted systemd service.",
+      "capability": "service.status",
+      "permission": "service.read",
+      "resource": "service:{service}",
+      "risk": "read",
+      "confirmation": "none",
+      "arguments": {
+        "service": {"type": "string", "required": true, "enum": ["api", "worker"]}
+      },
+      "request": {"action": "status", "service": "$arg:service"}
+    },
+    "service.restart": {
+      "description": "Restart one allowlisted systemd service.",
+      "capability": "service.restart",
+      "permission": "service.restart",
+      "resource": "service:{service}",
+      "risk": "write",
+      "confirmation": "explicit",
+      "arguments": {
+        "service": {"type": "string", "required": true, "enum": ["api", "worker"]}
+      },
+      "request": {"action": "restart", "service": "$arg:service"}
+    }
+  }
+}

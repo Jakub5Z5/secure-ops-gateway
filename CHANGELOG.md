@@ -12,8 +12,12 @@
 - Added bounded stdio framing with a 4 MiB default maximum request line size.
 - Added an end-to-end compatibility test against the official MCP Python SDK 2.2.0 over a real stdio subprocess, covering modern auto-negotiation, legacy initialization, tool discovery, tool calls and confirmation retry.
 
+- Added a concrete bounded systemd executor example exposing only `service.status` and `service.restart` for a trusted alias-to-unit allowlist, with matching gateway configuration and tests.
+- Added trusted-file loading for the systemd example, including no-final-symlink opens, ownership/write-permission checks and private 32-byte executor-key loading.
+
 ### Security
 
+- The systemd example never invokes a shell, never accepts arbitrary unit names, validates the authenticated resource against the requested public service alias and suppresses command stderr from executor errors.
 - Executor servers refuse pre-existing socket paths, pin the private parent directory identity and remove their socket only when the path still refers to the exact socket inode they created.
 - Unauthenticated, malformed, replayed, unsupported-capability and handler-failure requests receive no signed success response, preserving the gateway's uncertain-outcome semantics for mutations.
 - MCP requests cannot choose a gateway principal. The adapter requires a separately supplied trusted transport provider/subject and mints gateway request IDs server-side.

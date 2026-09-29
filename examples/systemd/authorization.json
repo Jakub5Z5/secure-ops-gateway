@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "roles": {
+    "service-observer": {
+      "permissions": ["service.read"],
+      "max_risk": "read"
+    },
+    "service-operator": {
+      "permissions": ["service.read", "service.restart"],
+      "max_risk": "write"
+    }
+  },
+  "bindings": {
+    "operator-a": [
+      {"role": "service-operator", "resources": ["service:api", "service:worker"]}
+    ]
+  }
+}

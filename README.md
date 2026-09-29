@@ -155,6 +155,14 @@ The socket must live below a private directory owned by the executor user. The s
 
 The built-in `UnixSocketExecutorClient` rejects unsigned responses, wrong request IDs, reflected request envelopes and replayed responses. The built-in `ReplayCache` is process-local; use a shared/durable replay protector when executors are replicated or must retain replay state across restarts. Handler code remains responsible for validating its capability-specific `invocation.request` fields and for avoiding generic shell surfaces.
 
+## Example systemd executor
+
+`examples/systemd_executor.py` is the first concrete executor example. It exposes only `service.status` and `service.restart` for public service aliases mapped through a trusted local allowlist to fixed systemd `.service` unit names. The handler validates the authenticated capability, permission, risk, resource and service-specific request before executing anything.
+
+The example invokes an absolute `systemctl` binary with an argument vector; it never constructs a shell command and never accepts an arbitrary unit name from the client. `service.restart` remains a normal `write` tool with explicit gateway confirmation. Executor-key and service-allowlist files are checked for ownership, regular-file type, symlink avoidance and unsafe write permissions before use.
+
+See [`examples/systemd`](examples/systemd) for matching tool, executor and authorization configuration plus deployment notes. The executor operating-system account still needs only the external permissions required for the allowlisted systemd units; prefer a dedicated account with narrowly scoped PolicyKit/systemd authorization over unrestricted root.
+
 ## State-path safety
 
 Security-sensitive state such as the confirmation database and JSONL audit log must live in a directory owned by the effective gateway user and not writable by group or other users. Existing ancestors must be owned by root or the gateway user. Final state files and existing path components may not be symlinks, and the gateway pins the parent directory identity so replacement after initialization is rejected. A file directly under shared `/tmp` is intentionally rejected; create a private `0700` subdirectory instead.

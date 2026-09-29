@@ -1,0 +1,4 @@
+{
+  "api": "my-api.service",
+  "worker": "my-worker.service"
+}

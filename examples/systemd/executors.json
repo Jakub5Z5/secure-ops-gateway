@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "executors": {
+    "systemd-services": {
+      "endpoint": "unix:/run/secure-ops-gateway/systemd/executor.sock",
+      "credential": "systemd-executor.key",
+      "capabilities": ["service.status", "service.restart"]
+    }
+  }
+}
