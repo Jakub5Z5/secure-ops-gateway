@@ -250,6 +250,38 @@ class Gateway:
         if not allowed_combinations:
             return None
 
+        allowed_values_by_argument = {
+            placeholder: [
+                value
+                for value in original_values
+                if value
+                in {
+                    combo[placeholder]
+                    for combo in allowed_combinations
+                }
+            ]
+            for placeholder, original_values in enum_arguments
+        }
+
+        # The public catalog schema represents each enum independently. If
+        # authorization permits only correlated combinations, independently
+        # filtered enums would advertise unauthorized Cartesian-product pairs.
+        # Hide the tool rather than publish a misleading capability surface.
+        authorized_tuples = {
+            tuple(combo[name] for name, _values in enum_arguments)
+            for combo in allowed_combinations
+        }
+        advertised_tuples = set(
+            itertools.product(
+                *(
+                    allowed_values_by_argument[name]
+                    for name, _values in enum_arguments
+                )
+            )
+        )
+        if advertised_tuples != authorized_tuples:
+            return None
+
         filtered = {
             **item,
             "arguments": {
@@ -257,15 +289,10 @@ class Gateway:
                 for arg_name, spec in item["arguments"].items()
             },
         }
-        for placeholder, original_values in enum_arguments:
-            allowed_values = {
-                combo[placeholder] for combo in allowed_combinations
-            }
-            filtered["arguments"][placeholder]["enum"] = [
-                value
-                for value in original_values
-                if value in allowed_values
-            ]
+        for placeholder, _original_values in enum_arguments:
+            filtered["arguments"][placeholder]["enum"] = (
+                allowed_values_by_argument[placeholder]
+            )
         return filtered
 
     def catalog(self, source: identity.SourceContext) -> list[dict]:

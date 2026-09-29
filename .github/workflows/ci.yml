@@ -26,10 +26,68 @@ jobs:
         run: python -m pip install -e . pytest==9.1.1 coverage==7.13.3
       - name: Compile sources
         run: python -m compileall -q src tests examples
-      - name: Run tests with coverage
+      - name: Run tests with line and branch coverage
         run: |
-          python -W error::ResourceWarning -m coverage run -m pytest -q
-          python -m coverage report --fail-under=90
+          python -W error::ResourceWarning -m coverage run --branch -m pytest -q
+          python -m coverage json -o coverage.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("coverage.json").read_text())
+          totals = report["totals"]
+
+          def line_percent(summary):
+              statements = summary["num_statements"]
+              if statements == 0:
+                  return 100.0
+              return 100.0 * summary["covered_lines"] / statements
+
+          global_line = line_percent(totals)
+          if global_line < 90.0:
+              raise SystemExit(
+                  f"global line coverage {global_line:.2f}% is below 90.00%"
+              )
+
+          critical_floors = {
+              "authorization.py": 87.0,
+              "audit.py": 87.0,
+              "registry.py": 89.0,
+              "operation_guard.py": 91.0,
+              "executor.py": 90.0,
+              "paths.py": 90.0,
+          }
+          for suffix, floor in critical_floors.items():
+              matches = [
+                  data["summary"]
+                  for name, data in report["files"].items()
+                  if name.endswith("/" + suffix) or name == suffix
+              ]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"expected exactly one coverage entry for {suffix}, "
+                      f"found {len(matches)}"
+                  )
+              current = line_percent(matches[0])
+              if current < floor:
+                  raise SystemExit(
+                      f"{suffix} line coverage {current:.2f}% "
+                      f"is below {floor:.2f}%"
+                  )
+
+          branches = totals.get("num_branches", 0)
+          covered_branches = totals.get("covered_branches", 0)
+          if branches <= 0:
+              raise SystemExit("branch coverage was not collected")
+          branch_percent = 100.0 * covered_branches / branches
+          print(f"global line coverage: {global_line:.2f}%")
+          print(
+              "global branch coverage: "
+              f"{branch_percent:.2f}% "
+              f"({covered_branches}/{branches})"
+          )
+          PY
+          python -m coverage report --fail-under=0
       - name: Build wheel
         run: python -m pip wheel . --no-deps --wheel-dir dist
       - name: Verify installed wheel
