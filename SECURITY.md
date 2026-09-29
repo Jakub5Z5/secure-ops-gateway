@@ -16,7 +16,7 @@ Never let a remote caller directly choose `source_provider`, `source_subject`, o
 
 ## Executor authentication and replay protection
 
-Executor requests and responses use purpose-separated HMAC-SHA256 envelopes. Verification requires a replay protector; verification without replay protection is rejected. Responses are bound to the originating `request_id`, and the built-in Unix-socket client rejects unsigned, reflected, mismatched or replayed responses. The built-in `ReplayCache` is suitable only for a single long-running process. Multi-process, multi-host, or restart-resistant deployments should provide a shared or durable replay-protector implementation.
+Executor requests and responses use purpose-separated HMAC-SHA256 envelopes. Verification requires a replay protector; verification without replay protection is rejected. Responses are bound to the originating `request_id`, and the built-in Unix-socket client rejects unsigned, reflected, mismatched or replayed responses. `ReplayCache` is suitable only for a single long-running process. `SQLiteReplayProtector` persists nonce state across restarts and coordinates multiple processes on one host. Multi-host deployments still require a distributed replay-protector implementation.
 
 Use a distinct random key for each trust boundary and keep executor sockets inaccessible to untrusted local users. The built-in `UnixSocketExecutorServer` requires a private owner-controlled parent directory, refuses any pre-existing socket path, creates the socket with mode `0600`, pins the parent directory identity, and performs inode-checked cleanup so it does not unlink a replacement path. Its handler map is an exact capability allowlist; do not register a generic shell or command-execution capability.
 

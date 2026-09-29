@@ -10,6 +10,7 @@ from secure_ops_gateway import (
     MCPAdapter,
     MCPStdioServer,
     MCPTrustedSource,
+    SQLiteReplayProtector,
     StaticIdentityResolver,
     UnixSocketExecutorClient,
     UnixSocketExecutorServer,
@@ -132,6 +133,9 @@ def main() -> None:
                 "demo.status": status,
                 "demo.restart": restart,
             },
+            replay_protector=SQLiteReplayProtector(
+                root / "executor-state" / "replay.sqlite3"
+            ),
             accept_poll_seconds=0.02,
         )
         executor_thread = threading.Thread(

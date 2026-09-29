@@ -16,7 +16,7 @@ The example invokes an absolute `systemctl` path with an argument vector. It nev
 - `executors.json` — capability routing to the Unix socket;
 - `authorization.json` — demonstration resource-aware policy.
 
-Keep the executor key in a separate file owned by the executor operating-system user with mode `0600`. The file contains exactly 32 random bytes encoded as 64 hexadecimal characters. The services configuration must be owned by root or the executor user and must not be group/world writable.
+Keep the executor key in a separate file owned by the executor operating-system user with mode `0600`. The file contains exactly 32 random bytes encoded as 64 hexadecimal characters. The services configuration must be owned by root or the executor user and must not be group/world writable. The replay database must live below a private directory owned by the executor user; it persists authenticated nonces across executor restarts.
 
 Example invocation:
 
@@ -24,7 +24,8 @@ Example invocation:
 python examples/systemd_executor.py \
   --socket /run/secure-ops-gateway/systemd/executor.sock \
   --key-file /etc/secure-ops-gateway/systemd-executor.key \
-  --services-file /etc/secure-ops-gateway/systemd-services.json
+  --services-file /etc/secure-ops-gateway/systemd-services.json \
+  --replay-db /var/lib/secure-ops-gateway/systemd/replay.sqlite3
 ```
 
 Do not run this example with broader operating-system privileges than necessary. A dedicated service account plus a narrowly scoped systemd/PolicyKit policy for the exact units is preferable to running the executor as unrestricted root. `service.restart` will fail closed if the executor account is not authorized to restart the selected unit.

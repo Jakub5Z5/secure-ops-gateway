@@ -4,6 +4,7 @@ from .executor import (
     CapabilityRouter,
     ExecutorInvocation,
     ReplayCache,
+    SQLiteReplayProtector,
     UnixSocketExecutorClient,
     UnixSocketExecutorServer,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "MCPTrustedSource",
     "SourceContext",
     "ReplayCache",
+    "SQLiteReplayProtector",
     "StaticIdentityResolver",
     "UnixSocketExecutorClient",
     "UnixSocketExecutorServer",
