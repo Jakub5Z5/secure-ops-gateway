@@ -115,6 +115,16 @@ Tool discovery filters enumerated resource arguments through authorization. Valu
 
 See [`examples/config`](examples/config) for a complete minimal configuration.
 
+## MCP transport adapter
+
+The development branch includes a stdio MCP adapter that serves the current stateless `2026-07-28` protocol and the latest handshake-era `2025-11-25` protocol. It implements `server/discover`, `initialize`, `tools/list`, `tools/call` and legacy `ping` without adding runtime dependencies.
+
+Transport identity remains outside the MCP request body. An embedding transport supplies an `MCPTrustedSource` containing the authenticated provider and subject; the adapter creates `SourceContext` objects from that trusted metadata and generates gateway request IDs server-side. Client-supplied `principal` fields are never used for gateway identity.
+
+`tools/list` is authorization-filtered through `Gateway.catalog()`. `tools/call` delegates authorization, routing, confirmation and audit semantics to the existing gateway core. For tools requiring explicit confirmation, the adapter exposes the existing `confirmed` and `confirmation_token` controls in the MCP input schema and returns a structured confirmation challenge when approval is required. The MCP host is responsible for collecting the intended approval before retrying the operation.
+
+The built-in stdio transport uses newline-delimited JSON-RPC and enforces a bounded request-frame size. It writes protocol messages only to stdout; embedding applications should send diagnostics to stderr.
+
 ## Executor verification
 
 Executor servers must verify every request envelope with replay protection and return a signed response envelope bound to the same request ID:
@@ -162,7 +172,7 @@ The `invoke_started` audit event is fail-closed: if it cannot be written, the ex
 
 `0.1.1` is a security-hardening alpha release of the standalone public project. The API and configuration schemas may change before `1.0`.
 
-Near-term work includes a complete MCP transport adapter, reusable executor SDK, packaging of example executors, durable replay backends, structured observability and deployment documentation. See `CHANGELOG.md` for security changes since 0.1.0.
+Near-term work includes a reusable executor SDK, packaging of example executors, durable replay backends, structured observability, deployment documentation and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
 
 ## Security
 

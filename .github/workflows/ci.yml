@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -37,3 +37,18 @@ jobs:
           python -m venv /tmp/secure-ops-gateway-wheel
           /tmp/secure-ops-gateway-wheel/bin/python -m pip install dist/*.whl
           /tmp/secure-ops-gateway-wheel/bin/python -c "import secure_ops_gateway; assert secure_ops_gateway.__version__ == '0.1.1'"
+
+  mcp-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install official MCP compatibility tooling
+        run: python -m pip install -e . pytest==9.1.1 mcp==2.2.0
+      - name: Test official MCP Python SDK compatibility
+        run: python -m pytest -q tests/integration/test_mcp_official_sdk.py
