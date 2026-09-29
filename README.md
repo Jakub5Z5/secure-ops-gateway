@@ -239,7 +239,7 @@ The `invoke_started` audit event is fail-closed: if it cannot be written, the ex
 
 ## Project status
 
-`0.1.1` is a security-hardening alpha release of the standalone public project. The API and configuration schemas may change before `1.0`.
+`0.2.0` is the current alpha release of the standalone public project. The API and configuration schemas may change before `1.0`.
 
 Near-term work includes deployment documentation, distributed multi-host admission/replay backends and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
 
