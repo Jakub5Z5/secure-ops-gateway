@@ -175,7 +175,28 @@ Security-sensitive state such as the confirmation database and JSONL audit log m
 
 ## Admission limits
 
-`Gateway` enables an in-process rate/concurrency controller by default: 120 calls per authenticated source per 60 seconds, at most 4 concurrent calls per source and 16 globally. Admission happens before identity resolution, so unknown-but-authenticated sources are limited too. Multi-process or replicated deployments should provide a shared admission controller if they require fleet-wide limits.
+`Gateway` enables an in-process rate/concurrency controller by default: 120 calls per authenticated source per 60 seconds, at most 4 concurrent calls per source and 16 globally. Admission happens before identity resolution, so unknown-but-authenticated sources are limited too.
+
+For multiple gateway workers on one host, use `SQLiteAdmissionController` with one private shared SQLite state file and pass it as `admission_controller=`. Rate-window events then survive worker restarts, while global and per-source in-flight limits are coordinated transactionally across processes. The controller stores only a SHA-256 digest of the authenticated `(provider, subject)` source key. On Linux it also records the owning boot identity and process start identity so leases left by crashed workers can be reclaimed without confusing a reused PID or a previous host boot for the original process.
+
+```python
+from secure_ops_gateway import SQLiteAdmissionController
+
+admission = SQLiteAdmissionController(
+    "/var/lib/secure-ops-gateway/admission.sqlite3",
+    max_inflight_global=16,
+    max_inflight_per_source=4,
+    max_calls_per_window=120,
+    window_seconds=60,
+)
+
+gateway = Gateway(
+    # ... normal gateway configuration ...
+    admission_controller=admission,
+)
+```
+
+A failed durable lease release is fail-closed: the lease remains counted instead of turning an already completed operation into a client-visible failure that could encourage a duplicate retry. Use `release_failure_handler` on `SQLiteAdmissionController` to surface that degradation out-of-band. Multi-host deployments still require a distributed admission backend for fleet-wide limits.
 
 ## Audit failure semantics
 
@@ -195,7 +216,7 @@ The `invoke_started` audit event is fail-closed: if it cannot be written, the ex
 
 `0.1.1` is a security-hardening alpha release of the standalone public project. The API and configuration schemas may change before `1.0`.
 
-Near-term work includes shared admission backends, structured observability, deployment documentation, distributed replay backends and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
+Near-term work includes structured observability, deployment documentation, distributed multi-host admission/replay backends and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
 
 ## Security
 

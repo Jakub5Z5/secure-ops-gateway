@@ -10,6 +10,7 @@ from secure_ops_gateway import (
     MCPAdapter,
     MCPStdioServer,
     MCPTrustedSource,
+    SQLiteAdmissionController,
     SQLiteReplayProtector,
     StaticIdentityResolver,
     UnixSocketExecutorClient,
@@ -164,6 +165,9 @@ def main() -> None:
 
         client = UnixSocketExecutorClient(key_loader=key_loader)
         guard = SQLiteOperationGuard(root / "state" / "operations.sqlite3")
+        admission = SQLiteAdmissionController(
+            root / "state" / "admission.sqlite3"
+        )
         gateway = Gateway(
             tools=TOOLS,
             executors=executors,
@@ -171,6 +175,7 @@ def main() -> None:
             identity_resolver=IDENTITIES,
             executor_call=client.call,
             operation_guard=guard,
+            admission_controller=admission,
         )
         adapter = MCPAdapter(
             gateway,
