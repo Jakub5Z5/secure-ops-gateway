@@ -44,7 +44,7 @@ The initial public core contains:
 - argument validation and bounded request templates;
 - capability-to-executor routing;
 - bidirectional HMAC-SHA256 authenticated executor envelopes with mandatory replay protection and request/response binding;
-- SQLite-backed explicit confirmation with idempotent replay, stale-execution recovery, bounded retention and private/symlink-safe state paths;
+- SQLite-backed explicit confirmation with idempotent replay, stale-execution recovery, bounded retention and ownership/symlink/replacement-safe state paths;
 - authorization-filtered tool discovery;
 - structured JSONL audit events with fail-closed pre-execution logging and non-duplicating post-execution failure semantics;
 - in-process rate and concurrency admission controls;
@@ -138,11 +138,11 @@ The built-in Unix-socket client rejects unsigned responses, wrong request IDs, r
 
 ## State-path safety
 
-Security-sensitive state such as the confirmation database and JSONL audit log must live in a private directory that is not writable by group or other users. Final state files and existing path components may not be symlinks. A file directly under shared `/tmp` is intentionally rejected; create a private `0700` subdirectory instead.
+Security-sensitive state such as the confirmation database and JSONL audit log must live in a directory owned by the effective gateway user and not writable by group or other users. Existing ancestors must be owned by root or the gateway user. Final state files and existing path components may not be symlinks, and the gateway pins the parent directory identity so replacement after initialization is rejected. A file directly under shared `/tmp` is intentionally rejected; create a private `0700` subdirectory instead.
 
 ## Admission limits
 
-`Gateway` enables an in-process rate/concurrency controller by default: 120 calls per source per 60 seconds, at most 4 concurrent calls per source and 16 globally. Multi-process or replicated deployments should provide a shared admission controller if they require fleet-wide limits.
+`Gateway` enables an in-process rate/concurrency controller by default: 120 calls per authenticated source per 60 seconds, at most 4 concurrent calls per source and 16 globally. Admission happens before identity resolution, so unknown-but-authenticated sources are limited too. Multi-process or replicated deployments should provide a shared admission controller if they require fleet-wide limits.
 
 ## Audit failure semantics
 
@@ -160,24 +160,13 @@ The `invoke_started` audit event is fail-closed: if it cannot be written, the ex
 
 ## Project status
 
-`0.1.0` is an alpha extraction of a production-oriented architecture into a standalone public project. The API and configuration schemas may change before `1.0`.
+`0.1.1` is a security-hardening alpha release of the standalone public project. The API and configuration schemas may change before `1.0`.
 
-Near-term work includes a complete MCP transport adapter, reusable executor SDK, packaging of example executors, durable replay backends, structured observability and deployment documentation.
-
-## Publishing from the Git bundle
-
-If you received the release as the provided Git bundle, it contains `HEAD`, `main` and the `v0.1.0` tag, so cloning checks out `main` directly:
-
-```bash
-git clone secure-ops-gateway-v0.1.0.bundle secure-ops-gateway
-cd secure-ops-gateway
-git remote set-url origin https://github.com/YOUR-ACCOUNT/secure-ops-gateway.git
-git push -u origin main --tags
-```
+Near-term work includes a complete MCP transport adapter, reusable executor SDK, packaging of example executors, durable replay backends, structured observability and deployment documentation. See `CHANGELOG.md` for security changes since 0.1.0.
 
 ## Security
 
-Read [`SECURITY.md`](SECURITY.md) before using this software for privileged operations. Treat the example policies as demonstrations, not production defaults.
+Read [`SECURITY.md`](SECURITY.md) and [`THREAT_MODEL.md`](THREAT_MODEL.md) before using this software for privileged operations. Treat the example policies as demonstrations, not production defaults.
 
 ## License
 
