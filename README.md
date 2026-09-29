@@ -155,6 +155,8 @@ The socket must live below a private directory owned by the executor user. The s
 
 The built-in `UnixSocketExecutorClient` rejects unsigned responses, wrong request IDs, reflected request envelopes and replayed responses. The built-in `ReplayCache` is process-local; use a shared/durable replay protector when executors are replicated or must retain replay state across restarts. Handler code remains responsible for validating its capability-specific `invocation.request` fields and for avoiding generic shell surfaces.
 
+Integration coverage includes the official MCP Python SDK driving a real stdio subprocess through `MCPAdapter`, `Gateway`, the authenticated Unix-socket executor channel and an allowlisted executor handler, including the explicit-confirmation retry path.
+
 ## Example systemd executor
 
 `examples/systemd_executor.py` is the first concrete executor example. It exposes only `service.status` and `service.restart` for public service aliases mapped through a trusted local allowlist to fixed systemd `.service` unit names. The handler validates the authenticated capability, permission, risk, resource and service-specific request before executing anything.

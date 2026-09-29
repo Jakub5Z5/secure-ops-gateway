@@ -51,4 +51,4 @@ jobs:
       - name: Install official MCP compatibility tooling
         run: python -m pip install -e . pytest==9.1.1 mcp==2.2.0
       - name: Test official MCP Python SDK compatibility
-        run: python -m pytest -q tests/integration/test_mcp_official_sdk.py
+        run: python -m pytest -q tests/integration
