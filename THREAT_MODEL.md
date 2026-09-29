@@ -29,7 +29,7 @@ The design considers:
 - an authenticated source attempting unauthorized resources or risk levels;
 - replay or modification of gateway/executor messages;
 - reuse or cross-binding of confirmation tokens;
-- malicious or compromised local users attempting symlink/path-redirection attacks against gateway state;
+- malicious or compromised local users attempting symlink/path-redirection attacks against gateway state or executor socket paths;
 - concurrent local gateway processes attempting to append audit records;
 - clients attempting resource exhaustion through repeated or concurrent requests;
 - executor failures where the final mutation outcome cannot be known safely.
@@ -52,7 +52,8 @@ The gateway fails closed when:
 - a state-changing tool lacks required explicit confirmation;
 - confirmation state is mismatched, expired, already executing or uncertain;
 - pre-execution audit cannot be persisted;
-- authenticated executor response verification fails;
+- authenticated executor request or response verification fails;
+- an executor request names a capability not explicitly registered by that executor;
 - security-sensitive state paths fail ownership, permission, symlink or parent-identity checks.
 
 Once an executor has returned success, a later audit append failure is reported out-of-band rather than converted into a client-visible operation failure, because returning failure could encourage a duplicate mutation.
@@ -62,7 +63,6 @@ Once an executor has returned success, a later audit append failure is reported 
 The core does not currently provide:
 
 - end-user authentication transports;
-- a complete MCP server transport;
 - host sandboxing for executors;
 - durable distributed replay protection;
 - fleet-wide distributed rate limiting;
