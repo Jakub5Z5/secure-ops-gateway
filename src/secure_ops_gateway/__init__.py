@@ -12,7 +12,12 @@ from .executor import (
 )
 from .gateway import Gateway
 from .identity import SourceContext, StaticIdentityResolver
-from .mcp_adapter import MCPAdapter, MCPStdioServer, MCPTrustedSource
+from .mcp_adapter import (
+    MCPAdapter,
+    MCPConnectionState,
+    MCPStdioServer,
+    MCPTrustedSource,
+)
 from .observability import GatewayMetrics
 
 __all__ = [
@@ -21,6 +26,7 @@ __all__ = [
     "Gateway",
     "GatewayMetrics",
     "MCPAdapter",
+    "MCPConnectionState",
     "MCPStdioServer",
     "MCPTrustedSource",
     "SourceContext",

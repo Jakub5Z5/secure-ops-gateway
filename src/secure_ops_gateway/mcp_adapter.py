@@ -36,6 +36,14 @@ class MCPTransportError(MCPAdapterError):
     pass
 
 
+@dataclass
+class MCPConnectionState:
+    """Mutable protocol state owned by one stateful MCP transport session."""
+
+    legacy_initialize_seen: bool = False
+    legacy_initialized: bool = False
+
+
 @dataclass(frozen=True)
 class MCPTrustedSource:
     """Authenticated transport identity supplied outside the MCP request body."""
@@ -97,8 +105,6 @@ class MCPAdapter:
             if request_id_factory is not None
             else lambda: secrets.token_urlsafe(18)
         )
-        self._legacy_initialize_seen = False
-        self._legacy_initialized = False
 
     @property
     def server_info(self) -> dict:
@@ -195,8 +201,24 @@ class MCPAdapter:
             return self._error(request_id, -32602, "Invalid params")
         return None
 
-    def _initialize(self, request_id: object, params: dict) -> dict:
-        if self._legacy_initialize_seen:
+    @staticmethod
+    def _legacy_state(
+        connection_state: MCPConnectionState | None,
+    ) -> MCPConnectionState:
+        if not isinstance(connection_state, MCPConnectionState):
+            raise MCPAdapterError(
+                "legacy MCP requires an explicit MCPConnectionState"
+            )
+        return connection_state
+
+    def _initialize(
+        self,
+        request_id: object,
+        params: dict,
+        connection_state: MCPConnectionState | None,
+    ) -> dict:
+        state = self._legacy_state(connection_state)
+        if state.legacy_initialize_seen:
             return self._error(request_id, -32600, "Already initialized")
 
         requested = params.get("protocolVersion")
@@ -214,7 +236,7 @@ class MCPAdapter:
         ):
             return self._error(request_id, -32602, "Invalid params")
 
-        self._legacy_initialize_seen = True
+        state.legacy_initialize_seen = True
         result = {
             "protocolVersion": LEGACY_PROTOCOL_VERSION,
             "capabilities": self.capabilities,
@@ -246,13 +268,14 @@ class MCPAdapter:
         params: dict,
         trusted_source: MCPTrustedSource,
         *,
+        connection_state: MCPConnectionState | None,
         modern: bool,
     ) -> dict:
         if modern:
             invalid = self._validate_modern_meta(params, request_id)
             if invalid is not None:
                 return invalid
-        elif not self._legacy_initialized:
+        elif not self._legacy_state(connection_state).legacy_initialized:
             return self._error(request_id, -32000, "Server not initialized")
 
         allowed_keys = {"_meta", "cursor"} if modern else {"cursor", "_meta"}
@@ -318,13 +341,14 @@ class MCPAdapter:
         params: dict,
         trusted_source: MCPTrustedSource,
         *,
+        connection_state: MCPConnectionState | None,
         modern: bool,
     ) -> dict:
         if modern:
             invalid = self._validate_modern_meta(params, request_id)
             if invalid is not None:
                 return invalid
-        elif not self._legacy_initialized:
+        elif not self._legacy_state(connection_state).legacy_initialized:
             return self._error(request_id, -32000, "Server not initialized")
 
         allowed = {"name", "arguments", "_meta"}
@@ -415,6 +439,7 @@ class MCPAdapter:
         message: object,
         *,
         trusted_source: MCPTrustedSource,
+        connection_state: MCPConnectionState | None = None,
     ) -> dict | None:
         """Handle one decoded MCP JSON-RPC message.
 
@@ -437,8 +462,9 @@ class MCPAdapter:
         is_notification = "id" not in message
         if is_notification:
             if method == "notifications/initialized":
-                if self._legacy_initialize_seen:
-                    self._legacy_initialized = True
+                state = self._legacy_state(connection_state)
+                if state.legacy_initialize_seen:
+                    state.legacy_initialized = True
                 return None
             return None
 
@@ -449,7 +475,7 @@ class MCPAdapter:
             return self._error(message.get("id"), -32600, "Invalid Request")
 
         if method == "initialize":
-            return self._initialize(request_id, params)
+            return self._initialize(request_id, params, connection_state)
         if method == "server/discover":
             return self._discover(request_id, params)
 
@@ -459,14 +485,19 @@ class MCPAdapter:
             invalid = self._validate_modern_meta(params, request_id)
             if invalid is not None:
                 return invalid
-        elif "_meta" in params and not self._legacy_initialized:
-            return self._error(request_id, -32602, "Invalid params")
+        elif "_meta" in params:
+            if (
+                not isinstance(connection_state, MCPConnectionState)
+                or not connection_state.legacy_initialized
+            ):
+                return self._error(request_id, -32602, "Invalid params")
 
         if method == "tools/list":
             return self._list_tools(
                 request_id,
                 params,
                 trusted_source,
+                connection_state=connection_state,
                 modern=modern,
             )
         if method == "tools/call":
@@ -474,10 +505,11 @@ class MCPAdapter:
                 request_id,
                 params,
                 trusted_source,
+                connection_state=connection_state,
                 modern=modern,
             )
         if method == "ping" and not modern:
-            if not self._legacy_initialized:
+            if not self._legacy_state(connection_state).legacy_initialized:
                 return self._error(request_id, -32000, "Server not initialized")
             return self._success(request_id, {})
         return self._error(request_id, -32601, "Method not found")
@@ -522,6 +554,7 @@ class MCPStdioServer:
         input_stream: BinaryIO,
         output_stream: BinaryIO,
     ) -> None:
+        connection_state = MCPConnectionState()
         while True:
             line = input_stream.readline(self.max_line_bytes + 1)
             if not line:
@@ -543,6 +576,7 @@ class MCPStdioServer:
             response = self.adapter.handle(
                 message,
                 trusted_source=self.trusted_source,
+                connection_state=connection_state,
             )
             if response is not None:
                 self._write(output_stream, response)
