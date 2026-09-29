@@ -301,3 +301,84 @@ def test_existing_in_memory_admission_controller_remains_available():
     context = SourceContext("transport", "a", "req")
     lease = controller.acquire(context)
     controller.release(lease)
+
+
+def test_process_marker_fallback_and_pid_liveness(monkeypatch):
+    import secure_ops_gateway.admission as admission_module
+
+    monkeypatch.setattr(admission_module, "_linux_boot_id", lambda: None)
+    monkeypatch.setattr(
+        admission_module,
+        "_linux_process_start_ticks",
+        lambda _pid: "123",
+    )
+    assert admission_module._process_marker(42) == "pid:42"
+
+    monkeypatch.setattr(admission_module.os, "kill", lambda _pid, _signal: None)
+    assert admission_module._process_marker_alive(42, "pid:42") is True
+
+    def missing_process(_pid, _signal):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(admission_module.os, "kill", missing_process)
+    assert admission_module._process_marker_alive(42, "pid:42") is False
+
+    def inaccessible_process(_pid, _signal):
+        raise PermissionError
+
+    monkeypatch.setattr(admission_module.os, "kill", inaccessible_process)
+    assert admission_module._process_marker_alive(42, "pid:42") is True
+
+    def indeterminate_process(_pid, _signal):
+        raise OSError
+
+    monkeypatch.setattr(admission_module.os, "kill", indeterminate_process)
+    assert admission_module._process_marker_alive(42, "pid:42") is True
+
+
+def test_linux_process_marker_treats_unreadable_identity_as_alive(monkeypatch):
+    import secure_ops_gateway.admission as admission_module
+
+    monkeypatch.setattr(admission_module, "_linux_boot_id", lambda: None)
+    monkeypatch.setattr(
+        admission_module,
+        "_linux_process_start_ticks",
+        lambda _pid: "unknown",
+    )
+    assert admission_module._process_marker_alive(42, "linux:boot:42:123") is True
+
+
+def test_sqlite_admission_release_failure_reporting_is_best_effort(tmp_path):
+    path = tmp_path / "private" / "admission.sqlite3"
+    controller = SQLiteAdmissionController(path)
+    lease = AdmissionLease(("transport", "a"), "lease-id")
+
+    controller._report_release_failure(RuntimeError("ignored"), lease)
+
+    calls = []
+
+    def broken_handler(exc, reported_lease):
+        calls.append((exc, reported_lease))
+        raise RuntimeError("monitoring failed")
+
+    controller.release_failure_handler = broken_handler
+    controller._report_release_failure(RuntimeError("release failed"), lease)
+    assert len(calls) == 1
+    assert calls[0][1] == lease
+
+
+def test_existing_in_memory_admission_release_decrements_per_source_count():
+    controller = GatewayAdmissionController(
+        max_inflight_global=2,
+        max_inflight_per_source=2,
+        max_calls_per_window=4,
+    )
+    context = SourceContext("transport", "a", "req")
+    first = controller.acquire(context)
+    second = controller.acquire(context)
+
+    controller.release(first)
+    replacement = controller.acquire(context)
+
+    controller.release(second)
+    controller.release(replacement)
