@@ -1,5 +1,20 @@
 ﻿# Changelog
 
+## 0.2.0 - unreleased
+
+### Added
+
+- Added a dual-era MCP stdio adapter supporting the current stateless `2026-07-28` protocol and the latest handshake-era `2025-11-25` protocol.
+- Added `server/discover`, `initialize`, `tools/list`, `tools/call` and legacy `ping` handling over newline-delimited JSON-RPC.
+- Added MCP tool-result translation with structured JSON output and explicit confirmation challenge propagation.
+- Added bounded stdio framing with a 4 MiB default maximum request line size.
+
+### Security
+
+- MCP requests cannot choose a gateway principal. The adapter requires a separately supplied trusted transport provider/subject and mints gateway request IDs server-side.
+- Authorization-filtered gateway catalogs are exposed as private, immediately stale MCP tool lists to avoid cross-identity caching.
+- Unknown/internal failures are mapped without leaking authorization policy details or arbitrary exception text.
+
 ## 0.1.1 - 2026-09-29
 
 Security hardening release prepared after the public 0.1.0 audit.
