@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import authorization, identity, registry
-from .admission import GatewayAdmissionController
+from .admission import AdmissionError, GatewayAdmissionController
 from .operation_guard import ConfirmationError
 
 
@@ -103,7 +103,8 @@ class Gateway:
                 except Exception:
                     pass
 
-    def _resolve_context(self, source: identity.SourceContext) -> InvocationContext:
+    @staticmethod
+    def _validate_source(source: identity.SourceContext) -> None:
         if not isinstance(source, identity.SourceContext):
             raise GatewayError("source context must be created by the transport adapter")
         if not all(
@@ -115,6 +116,9 @@ class Gateway:
             )
         ):
             raise GatewayError("invalid source context")
+
+    def _resolve_context(self, source: identity.SourceContext) -> InvocationContext:
+        self._validate_source(source)
         try:
             principal = self.identity_resolver(
                 source.source_provider,
@@ -205,9 +209,14 @@ class Gateway:
         return filtered
 
     def catalog(self, source: identity.SourceContext) -> list[dict]:
-        context = self._resolve_context(source)
-        lease = self.admission_controller.acquire(context)
+        self._validate_source(source)
         try:
+            lease = self.admission_controller.acquire(source)
+        except AdmissionError:
+            self._audit("admission_denied", source, best_effort=True)
+            raise
+        try:
+            context = self._resolve_context(source)
             visible = []
             for item in registry.catalog(registry=self.tools):
                 filtered = self._catalog_item(
@@ -237,9 +246,14 @@ class Gateway:
         confirmed: bool = False,
         confirmation_token: str | None = None,
     ) -> dict:
-        context = self._resolve_context(source)
-        lease = self.admission_controller.acquire(context)
+        self._validate_source(source)
         try:
+            lease = self.admission_controller.acquire(source)
+        except AdmissionError:
+            self._audit("admission_denied", source, best_effort=True)
+            raise
+        try:
+            context = self._resolve_context(source)
             return self._invoke_admitted(
                 source,
                 context,

@@ -253,3 +253,21 @@ def test_pre_execution_audit_failure_releases_confirmation_reservation(tmp_path)
         )
     assert calls == []
     assert guard.status(token, initial._resolve_context(source))["status"] == "pending"
+
+
+def test_identity_denied_calls_are_rate_limited_before_resolution():
+    from secure_ops_gateway.admission import GatewayAdmissionController, RateLimitExceeded
+
+    gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        admission_controller=GatewayAdmissionController(
+            max_calls_per_window=1,
+            window_seconds=60,
+            max_inflight_global=2,
+            max_inflight_per_source=1,
+        ),
+    )
+    with pytest.raises(IdentityDenied):
+        gateway.invoke(SourceContext("test", "unknown-source", "deny-1"), "demo.status")
+    with pytest.raises(RateLimitExceeded):
+        gateway.invoke(SourceContext("test", "unknown-source", "deny-2"), "demo.status")

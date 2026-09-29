@@ -20,11 +20,15 @@ class ConcurrencyLimitExceeded(AdmissionError):
 
 @dataclass(frozen=True)
 class AdmissionLease:
-    source_key: tuple[str, str, str]
+    source_key: tuple[str, str]
 
 
 class GatewayAdmissionController:
     """Small in-process admission controller for gateway calls.
+
+    Admission is keyed by the authenticated transport identity, not by the
+    resolved principal. This lets the limiter protect identity resolution and
+    identity-denied audit paths as well as authorized calls.
 
     Distributed deployments should replace this with a shared limiter if they
     need a global limit across gateway replicas.
@@ -64,13 +68,12 @@ class GatewayAdmissionController:
         self.clock = time.monotonic if clock is None else clock
         self._lock = threading.Lock()
         self._global_inflight = 0
-        self._source_inflight: dict[tuple[str, str, str], int] = {}
-        self._events: dict[tuple[str, str, str], deque[float]] = {}
+        self._source_inflight: dict[tuple[str, str], int] = {}
+        self._events: dict[tuple[str, str], deque[float]] = {}
 
     @staticmethod
-    def source_key(context) -> tuple[str, str, str]:
+    def source_key(context) -> tuple[str, str]:
         return (
-            context.principal_id,
             context.source_provider,
             context.source_subject,
         )

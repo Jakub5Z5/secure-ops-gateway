@@ -190,3 +190,50 @@ def test_unix_socket_client_rejects_unsigned_response(tmp_path):
             {"request_id": "socket-2", "action": "status"},
         )
     thread.join(2)
+
+
+def test_executor_rejects_bad_key_purpose_timestamp_and_expiry():
+    with pytest.raises(ExecutorError, match="32 bytes"):
+        sign_envelope({"x": 1}, b"short")
+    with pytest.raises(ExecutorError, match="purpose"):
+        sign_envelope({"x": 1}, KEY, purpose="invalid")
+
+    envelope = sign_envelope({"x": 1}, KEY, timestamp=100, nonce="9" * 32)
+    envelope["timestamp"] = True
+    with pytest.raises(ExecutorError, match="metadata"):
+        verify_envelope(envelope, KEY, replay_protector=ReplayCache(), now=100)
+
+    expired = sign_envelope({"x": 1}, KEY, timestamp=100, nonce="8" * 32)
+    with pytest.raises(ExecutorError, match="expired"):
+        verify_envelope(expired, KEY, replay_protector=ReplayCache(), now=200)
+
+
+def test_executor_rejects_invalid_response_payload_shape():
+    envelope = sign_envelope(
+        {"schema": 1, "request_id": "r", "response": "not-object"},
+        KEY,
+        purpose="response",
+        timestamp=100,
+        nonce="7" * 32,
+    )
+    with pytest.raises(ExecutorError, match="response payload"):
+        verify_response_envelope(
+            envelope,
+            KEY,
+            request_id="r",
+            replay_protector=ReplayCache(),
+            now=100,
+        )
+
+
+def test_unix_socket_client_rejects_invalid_route_before_connect():
+    from secure_ops_gateway.executor import UnixSocketExecutorClient
+
+    client = UnixSocketExecutorClient(key_loader=lambda _name: KEY)
+    with pytest.raises(ExecutorError, match="credential"):
+        client.call({"endpoint": "unix:/tmp/none"}, {"request_id": "r"})
+    with pytest.raises(ExecutorError, match="only unix"):
+        client.call(
+            {"endpoint": "tcp:localhost:1", "credential": "key"},
+            {"request_id": "r"},
+        )

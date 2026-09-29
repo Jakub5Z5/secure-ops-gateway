@@ -103,3 +103,56 @@ def test_begin_itself_persists_stale_execution_as_uncertain(tmp_path, monkeypatc
     with pytest.raises(ConfirmationError, match="uncertain"):
         guard.begin(token, CONTEXT, BASE_TOOL)
     assert guard.status(token, CONTEXT)["status"] == "uncertain"
+
+
+def test_confirmation_database_rejects_parent_owned_by_unrelated_user(tmp_path, monkeypatch):
+    actual_uid = os.geteuid()
+    fake_uid = actual_uid + 10000 if actual_uid != 0 else 10000
+    monkeypatch.setattr("secure_ops_gateway.paths.os.geteuid", lambda: fake_uid)
+    with pytest.raises(ConfirmationError, match="parent is unsafe"):
+        SQLiteOperationGuard(tmp_path / "operations.sqlite3")
+
+
+def test_confirmation_database_detects_parent_replacement(tmp_path):
+    parent = tmp_path / "state"
+    parent.mkdir(mode=0o700)
+    guard = SQLiteOperationGuard(parent / "operations.sqlite3")
+
+    moved = tmp_path / "state-old"
+    parent.rename(moved)
+    parent.mkdir(mode=0o700)
+
+    with pytest.raises(ConfirmationError, match="unsafe"):
+        guard.issue(CONTEXT, BASE_TOOL)
+    assert not (parent / "operations.sqlite3").exists()
+
+
+def test_confirmation_guard_validates_constructor_and_unknown_token(tmp_path):
+    with pytest.raises(ValueError):
+        SQLiteOperationGuard(tmp_path / "bad.sqlite3", ttl_seconds=0)
+    guard = SQLiteOperationGuard(tmp_path / "operations.sqlite3")
+    with pytest.raises(ConfirmationError, match="unknown"):
+        guard.begin("missing", CONTEXT, BASE_TOOL)
+    with pytest.raises(ConfirmationError, match="unknown"):
+        guard.status("missing", CONTEXT)
+
+
+def test_confirmation_completed_response_is_idempotent(tmp_path):
+    guard = SQLiteOperationGuard(tmp_path / "operations.sqlite3")
+    token = guard.issue(CONTEXT, BASE_TOOL)["confirmation_token"]
+    assert guard.begin(token, CONTEXT, BASE_TOOL)["execute"] is True
+    guard.complete(token, {"ok": True})
+    assert guard.begin(token, CONTEXT, BASE_TOOL) == {
+        "execute": False,
+        "response": {"ok": True},
+    }
+
+
+def test_confirmation_token_cannot_cross_source(tmp_path):
+    guard = SQLiteOperationGuard(tmp_path / "operations.sqlite3")
+    token = guard.issue(CONTEXT, BASE_TOOL)["confirmation_token"]
+    other = InvocationContext("bob", "test", "other", "request-2")
+    with pytest.raises(ConfirmationError, match="another source"):
+        guard.begin(token, other, BASE_TOOL)
+    with pytest.raises(ConfirmationError, match="unknown"):
+        guard.status(token, other)

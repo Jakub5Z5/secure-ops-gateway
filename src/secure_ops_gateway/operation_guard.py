@@ -8,7 +8,13 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .paths import SecurePathError, prepare_private_parent, reject_symlink_leaf
+from .paths import (
+    SecurePathError,
+    prepare_private_parent,
+    private_parent_identity,
+    reject_symlink_leaf,
+    verify_private_parent_identity,
+)
 
 
 class ConfirmationError(RuntimeError):
@@ -33,6 +39,7 @@ class SQLiteOperationGuard:
                 raise ValueError(f"{name} must be a positive integer")
         try:
             self.path = prepare_private_parent(path)
+            self._parent_identity = private_parent_identity(self.path)
         except SecurePathError as exc:
             raise ConfirmationError("confirmation database parent is unsafe") from exc
         self.ttl_seconds = ttl_seconds
@@ -66,6 +73,8 @@ class SQLiteOperationGuard:
 
     def _ensure_private_database_file(self) -> None:
         try:
+            prepare_private_parent(self.path)
+            verify_private_parent_identity(self.path, self._parent_identity)
             reject_symlink_leaf(self.path)
         except SecurePathError as exc:
             raise ConfirmationError("confirmation database path is unsafe") from exc
@@ -86,6 +95,8 @@ class SQLiteOperationGuard:
 
     def _enforce_private_permissions(self) -> None:
         try:
+            prepare_private_parent(self.path)
+            verify_private_parent_identity(self.path, self._parent_identity)
             reject_symlink_leaf(self.path)
             os.chmod(self.path, 0o600, follow_symlinks=False)
         except FileNotFoundError:
@@ -95,6 +106,8 @@ class SQLiteOperationGuard:
 
     def _connect(self):
         try:
+            prepare_private_parent(self.path)
+            verify_private_parent_identity(self.path, self._parent_identity)
             reject_symlink_leaf(self.path)
         except SecurePathError as exc:
             raise ConfirmationError("confirmation database path is unsafe") from exc

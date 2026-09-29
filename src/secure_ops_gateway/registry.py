@@ -6,6 +6,7 @@ from string import Formatter
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ARGUMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+RESERVED_ARGUMENT_NAMES = frozenset({"confirmed", "confirmation_token"})
 
 
 class RegistryError(RuntimeError):
@@ -37,9 +38,22 @@ def resource_argument_names(resource: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(fields))
 
 
+def _constraint_int(spec: dict, key: str, *, minimum: int | None = None) -> int | None:
+    if key not in spec:
+        return None
+    value = spec[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RegistryError(f"invalid {key}")
+    if minimum is not None and value < minimum:
+        raise RegistryError(f"invalid {key}")
+    return value
+
+
 def _validate_argument_spec(name: str, spec: object) -> None:
     if not isinstance(name, str) or not _ARGUMENT_NAME.fullmatch(name):
         raise RegistryError("invalid argument name")
+    if name in RESERVED_ARGUMENT_NAMES:
+        raise RegistryError(f"reserved argument name: {name}")
     if not isinstance(spec, dict):
         raise RegistryError(f"invalid argument definition: {name}")
     kind = spec.get("type")
@@ -47,7 +61,25 @@ def _validate_argument_spec(name: str, spec: object) -> None:
         raise RegistryError(f"unsupported argument type for {name}")
     if "required" in spec and not isinstance(spec["required"], bool):
         raise RegistryError(f"invalid required flag for {name}")
+
+    common = {"type", "required", "default"}
     if kind == "string":
+        allowed = common | {"enum", "min_length", "max_length"}
+    elif kind == "integer":
+        allowed = common | {"minimum", "maximum"}
+    else:
+        allowed = common
+    unknown = set(spec) - allowed
+    if unknown:
+        raise RegistryError(
+            f"unsupported argument constraints for {name}: {', '.join(sorted(unknown))}"
+        )
+
+    if kind == "string":
+        min_length = _constraint_int(spec, "min_length", minimum=0)
+        max_length = _constraint_int(spec, "max_length", minimum=0)
+        if min_length is not None and max_length is not None and min_length > max_length:
+            raise RegistryError(f"min_length exceeds max_length for {name}")
         enum = spec.get("enum")
         if enum is not None and (
             not isinstance(enum, list)
@@ -56,8 +88,45 @@ def _validate_argument_spec(name: str, spec: object) -> None:
             or len(set(enum)) != len(enum)
         ):
             raise RegistryError(f"invalid enum for {name}")
+        if enum is not None:
+            for value in enum:
+                if min_length is not None and len(value) < min_length:
+                    raise RegistryError(f"enum value is too short for {name}")
+                if max_length is not None and len(value) > max_length:
+                    raise RegistryError(f"enum value is too long for {name}")
+    elif kind == "integer":
+        minimum = _constraint_int(spec, "minimum")
+        maximum = _constraint_int(spec, "maximum")
+        if minimum is not None and maximum is not None and minimum > maximum:
+            raise RegistryError(f"minimum exceeds maximum for {name}")
+
     if "default" in spec:
         _validate_argument(name, spec["default"], spec)
+
+
+def _request_argument_names(value: object) -> set[str]:
+    names: set[str] = set()
+    if isinstance(value, str) and value.startswith("$arg:"):
+        name = value[5:]
+        if not _ARGUMENT_NAME.fullmatch(name):
+            raise RegistryError("invalid request template argument")
+        names.add(name)
+    elif isinstance(value, dict):
+        for item in value.values():
+            names.update(_request_argument_names(item))
+    elif isinstance(value, list):
+        for item in value:
+            names.update(_request_argument_names(item))
+    return names
+
+
+def _require_materializable(name: str, referenced: set[str], arguments: dict) -> None:
+    for arg_name in referenced:
+        spec = arguments[arg_name]
+        if not spec.get("required") and "default" not in spec:
+            raise RegistryError(
+                f"template argument {arg_name} for {name} must be required or have a default"
+            )
 
 
 def validate_tool_registry(document: dict) -> None:
@@ -70,6 +139,8 @@ def validate_tool_registry(document: dict) -> None:
         _name(name, "tool name")
         if not isinstance(tool, dict):
             raise RegistryError(f"invalid tool: {name}")
+        if "description" in tool and not isinstance(tool["description"], str):
+            raise RegistryError(f"invalid description for {name}")
         _name(tool.get("capability"), "capability")
         _name(tool.get("permission"), "permission")
         risk = tool.get("risk")
@@ -91,17 +162,24 @@ def validate_tool_registry(document: dict) -> None:
                 f"allow_unconfirmed_mutation is only valid for write or privileged tools: {name}"
             )
         resource = tool.get("resource")
-        placeholders = resource_argument_names(resource)
-        if not isinstance(tool.get("request"), dict):
+        placeholders = set(resource_argument_names(resource))
+        request = tool.get("request")
+        if not isinstance(request, dict):
             raise RegistryError(f"invalid request template for {name}")
         arguments = tool.get("arguments", {})
         if not isinstance(arguments, dict):
             raise RegistryError(f"invalid arguments for {name}")
         for arg_name, spec in arguments.items():
             _validate_argument_spec(arg_name, spec)
-        unknown_placeholders = set(placeholders) - set(arguments)
+
+        unknown_placeholders = placeholders - set(arguments)
         if unknown_placeholders:
             raise RegistryError(f"resource template references unknown arguments for {name}")
+        request_arguments = _request_argument_names(request)
+        unknown_request_arguments = request_arguments - set(arguments)
+        if unknown_request_arguments:
+            raise RegistryError(f"request template references unknown arguments for {name}")
+        _require_materializable(name, placeholders | request_arguments, arguments)
 
 
 def validate_executor_registry(document: dict) -> None:
