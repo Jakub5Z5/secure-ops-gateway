@@ -36,7 +36,7 @@ jobs:
         run: |
           python -m venv /tmp/secure-ops-gateway-wheel
           /tmp/secure-ops-gateway-wheel/bin/python -m pip install dist/*.whl
-          /tmp/secure-ops-gateway-wheel/bin/python -c "import secure_ops_gateway; assert secure_ops_gateway.__version__ == '0.1.1'"
+          /tmp/secure-ops-gateway-wheel/bin/python -c "import importlib.metadata as metadata, secure_ops_gateway; assert secure_ops_gateway.__version__ == '0.2.0'; assert metadata.version('secure-ops-gateway') == secure_ops_gateway.__version__"
 
   mcp-compat:
     runs-on: ubuntu-latest
