@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `SQLiteAdmissionController` for durable same-host rate limiting and cross-process global/per-source concurrency admission, including dead-worker lease recovery and hashed authenticated-source keys.
 - Added `SQLiteReplayProtector` for durable same-host executor replay protection across process restarts and multiple processes, with atomic nonce admission and bounded retention.
 - Added full-stack integration coverage from the official MCP Python SDK through the stdio adapter, Gateway authorization/confirmation path, authenticated Unix-socket executor client/server, capability handler and signed response verification.
 - Added a reusable authenticated Unix-socket executor server SDK with exact capability allowlisting, typed invocation metadata, HMAC-SHA256 request verification, replay protection and request-bound signed responses.
@@ -19,6 +20,7 @@
 
 ### Security
 
+- Shared SQLite admission state is stored below the same private owner-controlled path boundary as other security-sensitive state; failed lease release remains fail-closed and can be reported out-of-band without converting a completed mutation into a retry-prone client error.
 - Durable replay state uses the same private owner-controlled path checks as other security-sensitive SQLite state and rejects concurrent reuse of the same authenticated nonce across processes.
 - The systemd example never invokes a shell, never accepts arbitrary unit names, validates the authenticated resource against the requested public service alias and suppresses command stderr from executor errors.
 - Executor servers refuse pre-existing socket paths, pin the private parent directory identity and remove their socket only when the path still refers to the exact socket inode they created.

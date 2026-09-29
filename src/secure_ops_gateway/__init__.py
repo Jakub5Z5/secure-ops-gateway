@@ -1,5 +1,7 @@
 """Secure Ops Gateway public API."""
 
+from .admission import SQLiteAdmissionController
+
 from .executor import (
     CapabilityRouter,
     ExecutorInvocation,
@@ -21,6 +23,7 @@ __all__ = [
     "MCPTrustedSource",
     "SourceContext",
     "ReplayCache",
+    "SQLiteAdmissionController",
     "SQLiteReplayProtector",
     "StaticIdentityResolver",
     "UnixSocketExecutorClient",
