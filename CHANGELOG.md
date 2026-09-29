@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 ## 0.2.0 - unreleased
 
@@ -8,6 +8,7 @@
 - Added `server/discover`, `initialize`, `tools/list`, `tools/call` and legacy `ping` handling over newline-delimited JSON-RPC.
 - Added MCP tool-result translation with structured JSON output and explicit confirmation challenge propagation.
 - Added bounded stdio framing with a 4 MiB default maximum request line size.
+- Added an end-to-end compatibility test against the official MCP Python SDK 2.2.0 over a real stdio subprocess, covering modern auto-negotiation, legacy initialization, tool discovery, tool calls and confirmation retry.
 
 ### Security
 
