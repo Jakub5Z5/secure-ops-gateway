@@ -296,3 +296,289 @@ def test_rate_limited_identity_denials_do_not_amplify_audit_logs():
         with pytest.raises(RateLimitExceeded):
             gateway.invoke(SourceContext("test", "unknown-source", request_id), "demo.status")
     assert events == ["identity_denied"]
+
+
+def test_gateway_metrics_capture_success_security_and_admission_outcomes(tmp_path):
+    from secure_ops_gateway.admission import GatewayAdmissionController, RateLimitExceeded
+    from secure_ops_gateway.observability import GatewayMetrics
+
+    metrics = GatewayMetrics()
+    guard = SQLiteOperationGuard(tmp_path / "metrics-operations.sqlite3")
+    gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        operation_guard=guard,
+        metrics=metrics,
+    )
+
+    assert gateway.catalog(SourceContext("test", "alice-source", "metrics-catalog"))
+    assert gateway.invoke(
+        SourceContext("test", "alice-source", "metrics-read"),
+        "demo.status",
+    ) == {"ok": True}
+
+    with pytest.raises(IdentityDenied):
+        gateway.invoke(
+            SourceContext("test", "unknown-source", "metrics-identity"),
+            "demo.status",
+        )
+    with pytest.raises(AuthorizationDenied):
+        gateway.invoke(
+            SourceContext("test", "limited-source", "metrics-auth"),
+            "demo.restart",
+            {"service": "worker"},
+        )
+
+    source = SourceContext("test", "alice-source", "metrics-confirm")
+    with pytest.raises(ConfirmationRequired) as required:
+        gateway.invoke(source, "demo.restart", {"service": "api"})
+    token = required.value.challenge["confirmation_token"]
+    assert gateway.invoke(
+        source,
+        "demo.restart",
+        {"service": "api"},
+        confirmed=True,
+        confirmation_token=token,
+    ) == {"ok": True}
+    assert gateway.invoke(
+        source,
+        "demo.restart",
+        {"service": "api"},
+        confirmed=True,
+        confirmation_token=token,
+    ) == {"ok": True}
+
+    limited_metrics = GatewayMetrics()
+    limited_gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        metrics=limited_metrics,
+        admission_controller=GatewayAdmissionController(
+            max_calls_per_window=1,
+            window_seconds=60,
+            max_inflight_global=2,
+            max_inflight_per_source=1,
+        ),
+    )
+    assert limited_gateway.invoke(
+        SourceContext("test", "alice-source", "metrics-rate-1"),
+        "demo.status",
+    ) == {"ok": True}
+    with pytest.raises(RateLimitExceeded):
+        limited_gateway.invoke(
+            SourceContext("test", "alice-source", "metrics-rate-2"),
+            "demo.status",
+        )
+
+    snapshot = metrics.snapshot()
+    assert snapshot["requests"]["catalog"]["success"] == 1
+    assert snapshot["requests"]["invoke"]["success"] == 3
+    assert snapshot["requests"]["invoke"]["identity_denied"] == 1
+    assert snapshot["requests"]["invoke"]["authorization_denied"] == 1
+    assert snapshot["requests"]["invoke"]["confirmation_required"] == 1
+    assert snapshot["events"]["identity_denied"] == 1
+    assert snapshot["events"]["authorization_denied"] == 1
+    assert snapshot["events"]["confirmation_required"] == 1
+    assert snapshot["events"]["invoke_replayed"] == 1
+    assert limited_metrics.snapshot()["events"]["admission_rate_limited"] == 1
+    assert limited_metrics.snapshot()["requests"]["invoke"]["admission_denied"] == 1
+
+
+def test_gateway_metrics_capture_executor_uncertainty_and_audit_degradation(tmp_path):
+    from secure_ops_gateway.observability import GatewayMetrics
+
+    metrics = GatewayMetrics()
+    guard = SQLiteOperationGuard(tmp_path / "metrics-failure-operations.sqlite3")
+    source = SourceContext("test", "alice-source", "metrics-failure")
+    gateway = gateway_for(
+        lambda _route, _payload: (_ for _ in ()).throw(RuntimeError("executor failed")),
+        operation_guard=guard,
+        metrics=metrics,
+    )
+    with pytest.raises(ConfirmationRequired) as required:
+        gateway.invoke(source, "demo.restart", {"service": "api"})
+    with pytest.raises(RuntimeError, match="executor failed"):
+        gateway.invoke(
+            source,
+            "demo.restart",
+            {"service": "api"},
+            confirmed=True,
+            confirmation_token=required.value.challenge["confirmation_token"],
+        )
+
+    audit_metrics = GatewayMetrics()
+
+    def broken_audit(record):
+        if record["event"] == "invoke_succeeded":
+            raise OSError("audit unavailable")
+
+    audit_gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        audit_sink=broken_audit,
+        metrics=audit_metrics,
+    )
+    assert audit_gateway.invoke(
+        SourceContext("test", "alice-source", "metrics-audit"),
+        "demo.status",
+    ) == {"ok": True}
+
+    snapshot = metrics.snapshot()
+    assert snapshot["events"]["executor_failure"] == 1
+    assert snapshot["events"]["invoke_uncertain"] == 1
+    assert snapshot["requests"]["invoke"]["failed"] == 1
+    assert audit_metrics.snapshot()["events"]["audit_best_effort_failure"] == 1
+
+
+def test_gateway_metrics_are_best_effort_and_type_checked():
+    from secure_ops_gateway.observability import GatewayMetrics
+
+    with pytest.raises(TypeError, match="metrics"):
+        gateway_for(lambda _route, _payload: {"ok": True}, metrics=object())
+
+    class BrokenMetrics(GatewayMetrics):
+        def record_event(self, _event):
+            raise RuntimeError("metrics backend failed")
+
+        def finish_request(self, _operation, _outcome, _started_at):
+            raise RuntimeError("metrics backend failed")
+
+    metrics = BrokenMetrics()
+    gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        metrics=metrics,
+    )
+    assert gateway.invoke(
+        SourceContext("test", "alice-source", "metrics-best-effort"),
+        "demo.status",
+    ) == {"ok": True}
+
+
+def test_gateway_metrics_capture_admission_concurrency_and_state_failures():
+    from secure_ops_gateway.admission import (
+        AdmissionStateError,
+        ConcurrencyLimitExceeded,
+    )
+    from secure_ops_gateway.observability import GatewayMetrics
+
+    class RejectingAdmission:
+        def __init__(self, error):
+            self.error = error
+
+        def acquire(self, _source):
+            raise self.error
+
+        def release(self, _lease):
+            raise AssertionError("release must not run without a lease")
+
+    concurrency_metrics = GatewayMetrics()
+    concurrency_gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        metrics=concurrency_metrics,
+        admission_controller=RejectingAdmission(
+            ConcurrencyLimitExceeded("gateway global concurrency limit exceeded")
+        ),
+    )
+    with pytest.raises(ConcurrencyLimitExceeded):
+        concurrency_gateway.invoke(
+            SourceContext("test", "alice-source", "metrics-concurrency"),
+            "demo.status",
+        )
+    concurrency_snapshot = concurrency_metrics.snapshot()
+    assert concurrency_snapshot["events"]["admission_concurrency_limited"] == 1
+    assert concurrency_snapshot["requests"]["invoke"]["admission_denied"] == 1
+
+    state_metrics = GatewayMetrics()
+    state_gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        metrics=state_metrics,
+        admission_controller=RejectingAdmission(
+            AdmissionStateError("admission database unavailable")
+        ),
+    )
+    with pytest.raises(AdmissionStateError):
+        state_gateway.invoke(
+            SourceContext("test", "alice-source", "metrics-state"),
+            "demo.status",
+        )
+    state_snapshot = state_metrics.snapshot()
+    assert state_snapshot["events"]["admission_state_error"] == 1
+    assert state_snapshot["requests"]["invoke"]["failed"] == 1
+
+
+def test_gateway_metrics_capture_confirmation_denial_and_required_audit_failure(tmp_path):
+    from secure_ops_gateway.observability import GatewayMetrics
+    from secure_ops_gateway.operation_guard import ConfirmationError
+
+    confirmation_metrics = GatewayMetrics()
+    confirmation_gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        operation_guard=SQLiteOperationGuard(tmp_path / "metrics-denial.sqlite3"),
+        metrics=confirmation_metrics,
+    )
+    with pytest.raises(ConfirmationError):
+        confirmation_gateway.invoke(
+            SourceContext("test", "alice-source", "metrics-denied-confirmation"),
+            "demo.restart",
+            {"service": "api"},
+            confirmed=True,
+            confirmation_token="not-a-real-token",
+        )
+    snapshot = confirmation_metrics.snapshot()
+    assert snapshot["events"]["confirmation_denied"] == 1
+    assert snapshot["requests"]["invoke"]["confirmation_denied"] == 1
+
+    audit_metrics = GatewayMetrics()
+
+    def broken_required_audit(record):
+        if record["event"] == "invoke_started":
+            raise OSError("audit unavailable")
+
+    audit_gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        audit_sink=broken_required_audit,
+        metrics=audit_metrics,
+    )
+    with pytest.raises(OSError, match="audit unavailable"):
+        audit_gateway.invoke(
+            SourceContext("test", "alice-source", "metrics-required-audit"),
+            "demo.status",
+        )
+    audit_snapshot = audit_metrics.snapshot()
+    assert audit_snapshot["events"]["audit_required_failure"] == 1
+    assert audit_snapshot["requests"]["invoke"]["failed"] == 1
+
+
+def test_gateway_metrics_failures_and_admission_release_error_do_not_break_accounting():
+    from secure_ops_gateway.admission import AdmissionLease
+    from secure_ops_gateway.observability import GatewayMetrics
+
+    class BeginBrokenMetrics(GatewayMetrics):
+        def begin_request(self, _operation):
+            raise RuntimeError("metrics start failed")
+
+    gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        metrics=BeginBrokenMetrics(),
+    )
+    assert gateway.invoke(
+        SourceContext("test", "alice-source", "metrics-begin-failure"),
+        "demo.status",
+    ) == {"ok": True}
+
+    class ReleaseBrokenAdmission:
+        def acquire(self, _source):
+            return AdmissionLease(("test", "alice-source"))
+
+        def release(self, _lease):
+            raise RuntimeError("release failed")
+
+    metrics = GatewayMetrics()
+    release_gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        metrics=metrics,
+        admission_controller=ReleaseBrokenAdmission(),
+    )
+    with pytest.raises(RuntimeError, match="release failed"):
+        release_gateway.invoke(
+            SourceContext("test", "alice-source", "metrics-release-failure"),
+            "demo.status",
+        )
+    assert metrics.snapshot()["requests"]["invoke"]["failed"] == 1

@@ -198,6 +198,31 @@ gateway = Gateway(
 
 A failed durable lease release is fail-closed: the lease remains counted instead of turning an already completed operation into a client-visible failure that could encourage a duplicate retry. Use `release_failure_handler` on `SQLiteAdmissionController` to surface that degradation out-of-band. Multi-host deployments still require a distributed admission backend for fleet-wide limits.
 
+## Structured observability
+
+`GatewayMetrics` is an optional thread-safe, process-local collector for bounded operational telemetry. Pass it as `metrics=` to `Gateway` to record catalog/invoke outcomes, admission denials, identity/authorization denials, confirmation events, executor failures, audit degradation, in-flight request gauges and duration aggregates. The schema uses only fixed operation/outcome/event labels: principal IDs, transport subjects, request IDs, tool names, capabilities and resources are never accepted as metric labels.
+
+```python
+from secure_ops_gateway import GatewayMetrics, SQLiteAdmissionController
+
+metrics = GatewayMetrics()
+admission = SQLiteAdmissionController(
+    "/var/lib/secure-ops-gateway/admission.sqlite3",
+    release_failure_handler=metrics.admission_release_failure,
+)
+
+gateway = Gateway(
+    # ... normal gateway configuration ...
+    admission_controller=admission,
+    metrics=metrics,
+)
+
+status = metrics.snapshot()
+prometheus_text = metrics.render_prometheus()
+```
+
+Metrics are deliberately best-effort: collector failures never change authorization, confirmation, audit or executor semantics. `snapshot()` returns a structured dictionary; `render_prometheus()` emits bounded Prometheus text without requiring an HTTP server or third-party dependency. Expose either representation only through a separately authenticated monitoring surface. Aggregate per-process collectors externally when multiple gateway workers are used.
+
 ## Audit failure semantics
 
 The `invoke_started` audit event is fail-closed: if it cannot be written, the executor is not called. Once an executor has returned success, failure to append `invoke_succeeded` is treated as an audit-channel degradation rather than an operation failure, avoiding a misleading client error that could trigger a duplicate mutation. Use `audit_failure_handler` to surface that degradation through an independent monitoring path.
@@ -216,7 +241,7 @@ The `invoke_started` audit event is fail-closed: if it cannot be written, the ex
 
 `0.1.1` is a security-hardening alpha release of the standalone public project. The API and configuration schemas may change before `1.0`.
 
-Near-term work includes structured observability, deployment documentation, distributed multi-host admission/replay backends and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
+Near-term work includes deployment documentation, distributed multi-host admission/replay backends and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
 
 ## Security
 
