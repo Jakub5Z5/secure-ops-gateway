@@ -11,6 +11,7 @@ The primary assets are:
 - bounded operational capabilities;
 - confirmation tokens and operation state;
 - audit integrity and availability;
+- bounded operational observability without identity/resource label leakage;
 - the target services reached through executors.
 
 ## Trust boundaries
@@ -32,6 +33,7 @@ The design considers:
 - malicious or compromised local users attempting symlink/path-redirection attacks against gateway state or executor socket paths;
 - concurrent local gateway processes attempting to append audit records;
 - clients attempting resource exhaustion through repeated or concurrent requests;
+- accidental disclosure or cardinality exhaustion through observability labels;
 - executor failures where the final mutation outcome cannot be known safely.
 
 ## Security assumptions

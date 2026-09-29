@@ -5,7 +5,13 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import authorization, identity, registry
-from .admission import GatewayAdmissionController
+from .admission import (
+    AdmissionStateError,
+    ConcurrencyLimitExceeded,
+    GatewayAdmissionController,
+    RateLimitExceeded,
+)
+from .observability import GatewayMetrics
 from .operation_guard import ConfirmationError
 
 
@@ -42,6 +48,7 @@ class Gateway:
         audit_failure_handler: Callable[[Exception, dict], None] | None = None,
         operation_guard=None,
         admission_controller=None,
+        metrics: GatewayMetrics | None = None,
         max_catalog_combinations: int = 256,
     ):
         registry.validate_tool_registry(tools)
@@ -51,6 +58,8 @@ class Gateway:
             raise TypeError("identity_resolver must be callable")
         if audit_failure_handler is not None and not callable(audit_failure_handler):
             raise TypeError("audit_failure_handler must be callable")
+        if metrics is not None and not isinstance(metrics, GatewayMetrics):
+            raise TypeError("metrics must be GatewayMetrics")
         if (
             isinstance(max_catalog_combinations, bool)
             or not isinstance(max_catalog_combinations, int)
@@ -65,12 +74,57 @@ class Gateway:
         self.audit_sink = audit_sink
         self.audit_failure_handler = audit_failure_handler
         self.operation_guard = operation_guard
+        self.metrics = metrics
         self.admission_controller = (
             GatewayAdmissionController()
             if admission_controller is None
             else admission_controller
         )
         self.max_catalog_combinations = max_catalog_combinations
+
+    def _metric_event(self, event: str) -> None:
+        if self.metrics is None:
+            return
+        try:
+            self.metrics.record_event(event)
+        except Exception:
+            # Observability is intentionally best-effort and must never alter
+            # authorization, confirmation or execution semantics.
+            pass
+
+    def _metric_begin(self, operation: str) -> float | None:
+        if self.metrics is None:
+            return None
+        try:
+            return self.metrics.begin_request(operation)
+        except Exception:
+            return None
+
+    def _metric_finish(
+        self,
+        operation: str,
+        outcome: str,
+        started_at: float | None,
+    ) -> None:
+        if self.metrics is None or started_at is None:
+            return
+        try:
+            self.metrics.finish_request(operation, outcome, started_at)
+        except Exception:
+            pass
+
+    def _acquire_admission(self, source: identity.SourceContext):
+        try:
+            return self.admission_controller.acquire(source)
+        except RateLimitExceeded:
+            self._metric_event("admission_rate_limited")
+            raise
+        except ConcurrencyLimitExceeded:
+            self._metric_event("admission_concurrency_limited")
+            raise
+        except AdmissionStateError:
+            self._metric_event("admission_state_error")
+            raise
 
     def _audit(
         self,
@@ -95,6 +149,11 @@ class Gateway:
         try:
             self.audit_sink(record)
         except Exception as exc:
+            self._metric_event(
+                "audit_best_effort_failure"
+                if best_effort
+                else "audit_required_failure"
+            )
             if not best_effort:
                 raise
             if self.audit_failure_handler is not None:
@@ -125,6 +184,7 @@ class Gateway:
                 source.source_subject,
             )
         except identity.IdentityDenied:
+            self._metric_event("identity_denied")
             self._audit("identity_denied", source, best_effort=True)
             raise
         if not isinstance(principal, str) or not principal:
@@ -209,9 +269,12 @@ class Gateway:
         return filtered
 
     def catalog(self, source: identity.SourceContext) -> list[dict]:
-        self._validate_source(source)
-        lease = self.admission_controller.acquire(source)
+        started_at = self._metric_begin("catalog")
+        outcome = "failed"
+        lease = None
         try:
+            self._validate_source(source)
+            lease = self._acquire_admission(source)
             context = self._resolve_context(source)
             visible = []
             for item in registry.catalog(registry=self.tools):
@@ -229,9 +292,25 @@ class Gateway:
                 visible_tools=len(visible),
                 best_effort=True,
             )
+            outcome = "success"
             return visible
+        except (RateLimitExceeded, ConcurrencyLimitExceeded):
+            outcome = "admission_denied"
+            raise
+        except identity.IdentityDenied:
+            outcome = "identity_denied"
+            raise
         finally:
-            self.admission_controller.release(lease)
+            if lease is not None:
+                try:
+                    self.admission_controller.release(lease)
+                except Exception:
+                    outcome = "failed"
+                    raise
+                finally:
+                    self._metric_finish("catalog", outcome, started_at)
+            else:
+                self._metric_finish("catalog", outcome, started_at)
 
     def invoke(
         self,
@@ -242,11 +321,14 @@ class Gateway:
         confirmed: bool = False,
         confirmation_token: str | None = None,
     ) -> dict:
-        self._validate_source(source)
-        lease = self.admission_controller.acquire(source)
+        started_at = self._metric_begin("invoke")
+        outcome = "failed"
+        lease = None
         try:
+            self._validate_source(source)
+            lease = self._acquire_admission(source)
             context = self._resolve_context(source)
-            return self._invoke_admitted(
+            response = self._invoke_admitted(
                 source,
                 context,
                 tool_name,
@@ -254,8 +336,34 @@ class Gateway:
                 confirmed=confirmed,
                 confirmation_token=confirmation_token,
             )
+            outcome = "success"
+            return response
+        except (RateLimitExceeded, ConcurrencyLimitExceeded):
+            outcome = "admission_denied"
+            raise
+        except identity.IdentityDenied:
+            outcome = "identity_denied"
+            raise
+        except authorization.AuthorizationDenied:
+            outcome = "authorization_denied"
+            raise
+        except ConfirmationRequired:
+            outcome = "confirmation_required"
+            raise
+        except ConfirmationError:
+            outcome = "confirmation_denied"
+            raise
         finally:
-            self.admission_controller.release(lease)
+            if lease is not None:
+                try:
+                    self.admission_controller.release(lease)
+                except Exception:
+                    outcome = "failed"
+                    raise
+                finally:
+                    self._metric_finish("invoke", outcome, started_at)
+            else:
+                self._metric_finish("invoke", outcome, started_at)
 
     def _invoke_admitted(
         self,
@@ -281,6 +389,7 @@ class Gateway:
                 policy=self.policy,
             )
         except authorization.AuthorizationDenied:
+            self._metric_event("authorization_denied")
             self._audit(
                 "authorization_denied",
                 source,
@@ -303,6 +412,7 @@ class Gateway:
                 raise GatewayError("explicit confirmation guard is not configured")
             if not confirmed:
                 challenge = self.operation_guard.issue(context, tool)
+                self._metric_event("confirmation_required")
                 self._audit(
                     "confirmation_required",
                     source,
@@ -321,6 +431,7 @@ class Gateway:
                     tool,
                 )
             except ConfirmationError:
+                self._metric_event("confirmation_denied")
                 self._audit(
                     "confirmation_denied",
                     source,
@@ -332,6 +443,7 @@ class Gateway:
                 )
                 raise
             if not decision["execute"]:
+                self._metric_event("invoke_replayed")
                 self._audit(
                     "invoke_replayed",
                     source,
@@ -386,7 +498,9 @@ class Gateway:
                     response,
                 )
         except Exception as exc:
+            self._metric_event("executor_failure")
             if explicit:
+                self._metric_event("invoke_uncertain")
                 try:
                     self.operation_guard.mark_uncertain(
                         confirmation_token

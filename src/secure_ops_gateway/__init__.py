@@ -13,11 +13,13 @@ from .executor import (
 from .gateway import Gateway
 from .identity import SourceContext, StaticIdentityResolver
 from .mcp_adapter import MCPAdapter, MCPStdioServer, MCPTrustedSource
+from .observability import GatewayMetrics
 
 __all__ = [
     "CapabilityRouter",
     "ExecutorInvocation",
     "Gateway",
+    "GatewayMetrics",
     "MCPAdapter",
     "MCPStdioServer",
     "MCPTrustedSource",

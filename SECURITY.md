@@ -32,6 +32,12 @@ The gateway emits structured events for identity denial, authorization denial, c
 
 Protect the audit destination from modification and deletion by the workload being audited whenever possible. The built-in file sinks reject symlink leaves, shared-writable state directories, directories owned by unrelated operating-system users, and parent-directory replacement after initialization. JSONL file writes use cross-process `flock` serialization so partial writes from independent gateway processes cannot interleave. Pre-execution audit failure prevents execution. Post-execution audit failure never changes a successful executor result into a client-visible operation failure; route `audit_failure_handler` to an independent alerting channel.
 
+## Observability
+
+`GatewayMetrics` intentionally uses a fixed, low-cardinality schema and does not accept principal IDs, transport subjects, request IDs, tool names, capabilities or resources as metric labels. Keep that property when exporting or transforming metrics: do not add user-controlled or security-sensitive values as labels. Metrics are best-effort and are not a substitute for the durable audit trail.
+
+Treat monitoring endpoints as a separate authenticated surface. Even aggregate operational counters can reveal workload timing, failure rates or service health. The built-in collector is process-local; multi-worker deployments should aggregate snapshots externally rather than weakening the gateway trust boundary to share metrics state.
+
 ## General deployment guidance
 
 The project intentionally exposes bounded capabilities rather than arbitrary shell commands. Deployments are expected to keep executors isolated, use separate credentials per trust boundary, authorize every concrete resource, and require explicit confirmation for state-changing operations.
