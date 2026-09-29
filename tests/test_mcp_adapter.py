@@ -8,6 +8,8 @@ from secure_ops_gateway.mcp_adapter import (
     LEGACY_PROTOCOL_VERSION,
     MODERN_PROTOCOL_VERSION,
     MCPAdapter,
+    MCPAdapterError,
+    MCPConnectionState,
     MCPStdioServer,
     MCPTransportError,
     MCPTrustedSource,
@@ -357,9 +359,11 @@ def test_unexpected_exception_is_internal_error(adapter, trusted):
 
 
 def test_legacy_handshake_tools_and_ping(adapter, trusted):
+    state = MCPConnectionState()
     before = adapter.handle(
         {"jsonrpc": "2.0", "id": "a", "method": "tools/list", "params": {}},
         trusted_source=trusted,
+        connection_state=state,
     )
     assert before["error"]["code"] == -32000
 
@@ -375,17 +379,20 @@ def test_legacy_handshake_tools_and_ping(adapter, trusted):
             },
         },
         trusted_source=trusted,
+        connection_state=state,
     )
     assert initialized["result"]["protocolVersion"] == LEGACY_PROTOCOL_VERSION
     assert initialized["result"]["serverInfo"]["name"] == "test-gateway"
     assert adapter.handle(
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         trusted_source=trusted,
+        connection_state=state,
     ) is None
 
     listed = adapter.handle(
         {"jsonrpc": "2.0", "id": "list", "method": "tools/list", "params": {}},
         trusted_source=trusted,
+        connection_state=state,
     )
     assert "resultType" not in listed["result"]
     assert listed["result"]["tools"]
@@ -393,11 +400,13 @@ def test_legacy_handshake_tools_and_ping(adapter, trusted):
     pong = adapter.handle(
         {"jsonrpc": "2.0", "id": "ping", "method": "ping", "params": {}},
         trusted_source=trusted,
+        connection_state=state,
     )
     assert pong["result"] == {}
 
 
 def test_second_initialize_is_rejected(adapter, trusted):
+    state = MCPConnectionState()
     init = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -408,10 +417,76 @@ def test_second_initialize_is_rejected(adapter, trusted):
             "clientInfo": {"name": "client", "version": "1"},
         },
     }
-    assert adapter.handle(init, trusted_source=trusted)["result"]["protocolVersion"] == LEGACY_PROTOCOL_VERSION
+    assert adapter.handle(init, trusted_source=trusted, connection_state=state)["result"]["protocolVersion"] == LEGACY_PROTOCOL_VERSION
     init["id"] = 2
-    assert adapter.handle(init, trusted_source=trusted)["error"]["code"] == -32600
+    assert adapter.handle(init, trusted_source=trusted, connection_state=state)["error"]["code"] == -32600
 
+
+
+def test_legacy_connection_state_is_isolated_between_clients(adapter, trusted):
+    state_a = MCPConnectionState()
+    state_b = MCPConnectionState()
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": "init-a",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": LEGACY_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "client-a", "version": "1"},
+        },
+    }
+
+    assert adapter.handle(
+        initialize,
+        trusted_source=trusted,
+        connection_state=state_a,
+    )["result"]["protocolVersion"] == LEGACY_PROTOCOL_VERSION
+
+    assert adapter.handle(
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        trusted_source=trusted,
+        connection_state=state_a,
+    ) is None
+
+    assert adapter.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "list-a",
+            "method": "tools/list",
+            "params": {},
+        },
+        trusted_source=trusted,
+        connection_state=state_a,
+    )["result"]["tools"]
+
+    assert adapter.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "list-b",
+            "method": "tools/list",
+            "params": {},
+        },
+        trusted_source=trusted,
+        connection_state=state_b,
+    )["error"]["code"] == -32000
+
+
+def test_legacy_initialize_requires_connection_state(adapter, trusted):
+    with pytest.raises(MCPAdapterError, match="MCPConnectionState"):
+        adapter.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": "init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": LEGACY_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "client", "version": "1"},
+                },
+            },
+            trusted_source=trusted,
+        )
 
 def test_invalid_requests_notifications_and_methods(adapter, trusted):
     assert adapter.handle([], trusted_source=trusted)["error"]["code"] == -32600
@@ -458,6 +533,44 @@ def test_stdio_transport_frames_requests(adapter, trusted):
     response = json.loads(server.transact_bytes(raw))
     assert response["id"] == 1
     assert response["result"]["resultType"] == "complete"
+
+
+def test_stdio_legacy_state_is_scoped_to_one_serve(adapter, trusted):
+    server = MCPStdioServer(adapter, trusted_source=trusted, max_line_bytes=4096)
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": LEGACY_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "legacy-client", "version": "1"},
+        },
+    }
+    initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    listed = {
+        "jsonrpc": "2.0",
+        "id": "list",
+        "method": "tools/list",
+        "params": {},
+    }
+
+    payload = b"".join(
+        json.dumps(item).encode() + b"\n"
+        for item in (initialize, initialized, listed)
+    )
+    responses = [
+        json.loads(line)
+        for line in server.transact_bytes(payload).splitlines()
+    ]
+    assert len(responses) == 2
+    assert responses[0]["result"]["protocolVersion"] == LEGACY_PROTOCOL_VERSION
+    assert responses[1]["result"]["tools"]
+
+    fresh = json.loads(
+        server.transact_bytes(json.dumps(listed).encode() + b"\n")
+    )
+    assert fresh["error"]["code"] == -32000
 
 
 def test_stdio_transport_parse_error_and_frame_limits(adapter, trusted):
