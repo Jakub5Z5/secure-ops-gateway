@@ -1,4 +1,5 @@
 import os
+from contextlib import closing
 import sqlite3
 
 import pytest
@@ -85,7 +86,7 @@ def test_cleanup_removes_old_terminal_records(tmp_path, monkeypatch):
     guard.complete(token, {"ok": True})
     clock["now"] = 1011
     assert guard.cleanup() == 1
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db:
         assert db.execute("SELECT COUNT(*) FROM confirmations").fetchone()[0] == 0
 
 
@@ -156,3 +157,57 @@ def test_confirmation_token_cannot_cross_source(tmp_path):
         guard.begin(token, other, BASE_TOOL)
     with pytest.raises(ConfirmationError, match="unknown"):
         guard.status(token, other)
+
+
+def test_confirmation_guard_closes_all_internal_database_connections(tmp_path, monkeypatch):
+    original_connect = sqlite3.connect
+    opened = []
+
+    class TrackingConnection(sqlite3.Connection):
+        was_closed = False
+
+        def close(self):
+            self.was_closed = True
+            return super().close()
+
+    def tracked_connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        connection = original_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr("secure_ops_gateway.operation_guard.sqlite3.connect", tracked_connect)
+    guard = SQLiteOperationGuard(tmp_path / "operations.sqlite3")
+    token = guard.issue(CONTEXT, BASE_TOOL)["confirmation_token"]
+    assert guard.begin(token, CONTEXT, BASE_TOOL)["execute"] is True
+    guard.complete(token, {"ok": True})
+    assert guard.status(token, CONTEXT)["status"] == "completed"
+    guard.cleanup()
+
+    assert opened
+    assert all(connection.was_closed for connection in opened)
+
+
+def test_confirmation_guard_rejects_invalid_and_conflicting_states(tmp_path, monkeypatch):
+    clock = {"now": 1000}
+    monkeypatch.setattr("secure_ops_gateway.operation_guard.time.time", lambda: clock["now"])
+    guard = SQLiteOperationGuard(tmp_path / "operations.sqlite3", ttl_seconds=5)
+
+    with pytest.raises(ConfirmationError, match="invalid confirmation token"):
+        guard.begin("", CONTEXT, BASE_TOOL)
+
+    token = guard.issue(CONTEXT, BASE_TOOL)["confirmation_token"]
+    assert guard.begin(token, CONTEXT, BASE_TOOL)["execute"] is True
+    with pytest.raises(ConfirmationError, match="already in use"):
+        guard.begin(token, CONTEXT, BASE_TOOL)
+    with pytest.raises(ConfirmationError, match="cannot be released"):
+        guard.abort_before_execution("missing")
+
+    guard.complete(token, {"ok": True})
+    with pytest.raises(ConfirmationError, match="not executing"):
+        guard.complete(token, {"ok": True})
+
+    expired = guard.issue(CONTEXT, BASE_TOOL)["confirmation_token"]
+    clock["now"] = 1006
+    with pytest.raises(ConfirmationError, match="not usable"):
+        guard.begin(expired, CONTEXT, BASE_TOOL)

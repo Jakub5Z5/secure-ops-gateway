@@ -13,6 +13,7 @@ Security hardening release prepared after the public 0.1.0 audit.
 - Apply admission limits before identity resolution so unknown authenticated sources cannot bypass rate/concurrency controls; over-limit attempts are rejected without per-request audit writes to avoid log-amplification denial of service.
 - Reserve gateway confirmation field names to prevent MCP schema/control collisions.
 - Validate argument constraints and `$arg:` request templates at startup instead of failing during invocation.
+- Close every SQLite operation-guard connection deterministically and fail CI on leaked `ResourceWarning` handles.
 
 ### Quality
 

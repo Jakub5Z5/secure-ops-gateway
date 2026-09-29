@@ -27,7 +27,7 @@ jobs:
         run: python -m compileall -q src tests examples
       - name: Run tests with coverage
         run: |
-          python -m coverage run -m pytest -q
+          python -W error::ResourceWarning -m coverage run -m pytest -q
           python -m coverage report --fail-under=90
       - name: Build wheel
         run: python -m pip wheel . --no-deps --wheel-dir dist

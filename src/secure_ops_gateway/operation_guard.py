@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 import secrets
@@ -46,7 +47,7 @@ class SQLiteOperationGuard:
         self.execution_stale_seconds = execution_stale_seconds
         self.retention_seconds = retention_seconds
         self._ensure_private_database_file()
-        with self._connect() as db:
+        with self._database() as db:
             db.execute(
                 """CREATE TABLE IF NOT EXISTS confirmations (
                     token TEXT PRIMARY KEY,
@@ -121,6 +122,15 @@ class SQLiteOperationGuard:
             raise
         return connection
 
+    @contextmanager
+    def _database(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     @staticmethod
     def operation_hash(context, tool: dict) -> str:
         document = {
@@ -147,7 +157,7 @@ class SQLiteOperationGuard:
     def cleanup(self, *, now: int | None = None) -> int:
         current = int(time.time()) if now is None else int(now)
         cutoff = current - self.retention_seconds
-        with self._connect() as db:
+        with self._database() as db:
             cursor = db.execute(
                 """DELETE FROM confirmations
                    WHERE
@@ -179,7 +189,7 @@ class SQLiteOperationGuard:
         token = secrets.token_urlsafe(32)
         expires = int(time.time()) + self.ttl_seconds
         op_hash = self.operation_hash(context, tool)
-        with self._connect() as db:
+        with self._database() as db:
             db.execute(
                 """INSERT INTO confirmations (
                        token, operation_hash, principal_id, source_provider,
@@ -208,7 +218,7 @@ class SQLiteOperationGuard:
         if not isinstance(token, str) or not token:
             raise ConfirmationError("invalid confirmation token")
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 """SELECT operation_hash, principal_id, source_provider,
@@ -264,7 +274,7 @@ class SQLiteOperationGuard:
     def abort_before_execution(self, token: str) -> None:
         """Release a reservation when the executor was definitely not called."""
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             updated = db.execute(
                 """UPDATE confirmations
                    SET status='pending', started_at=NULL
@@ -276,7 +286,7 @@ class SQLiteOperationGuard:
 
     def mark_uncertain(self, token: str) -> None:
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             db.execute(
                 """UPDATE confirmations
                    SET status='uncertain', completed_at=?
@@ -292,7 +302,7 @@ class SQLiteOperationGuard:
             separators=(",", ":"),
         )
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             updated = db.execute(
                 """UPDATE confirmations
                    SET status='completed', response_json=?, completed_at=?
@@ -304,7 +314,7 @@ class SQLiteOperationGuard:
 
     def status(self, token: str, context) -> dict:
         now = int(time.time())
-        with self._connect() as db:
+        with self._database() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 """SELECT principal_id, source_provider, source_subject,
