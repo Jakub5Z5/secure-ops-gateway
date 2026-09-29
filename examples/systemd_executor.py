@@ -17,7 +17,11 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Mapping
 
-from secure_ops_gateway import ExecutorInvocation, UnixSocketExecutorServer
+from secure_ops_gateway import (
+    ExecutorInvocation,
+    SQLiteReplayProtector,
+    UnixSocketExecutorServer,
+)
 from secure_ops_gateway.executor import ExecutorError
 
 _ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -231,6 +235,7 @@ def main() -> None:
     parser.add_argument("--socket", required=True, help="Unix socket path owned by this executor")
     parser.add_argument("--key-file", required=True, help="0600 file containing a 32-byte key as 64 hex characters")
     parser.add_argument("--services-file", required=True, help="trusted JSON alias-to-.service allowlist")
+    parser.add_argument("--replay-db", required=True, help="private SQLite database for durable replay protection")
     parser.add_argument("--systemctl", default="/usr/bin/systemctl", help="absolute systemctl binary path")
     parser.add_argument("--timeout", type=float, default=10.0, help="systemctl timeout in seconds")
     args = parser.parse_args()
@@ -241,7 +246,13 @@ def main() -> None:
         systemctl_path=args.systemctl,
         timeout_seconds=args.timeout,
     )
-    server = UnixSocketExecutorServer(args.socket, key, controller.handlers())
+    replay = SQLiteReplayProtector(args.replay_db)
+    server = UnixSocketExecutorServer(
+        args.socket,
+        key,
+        controller.handlers(),
+        replay_protector=replay,
+    )
     server.serve_forever()
 
 

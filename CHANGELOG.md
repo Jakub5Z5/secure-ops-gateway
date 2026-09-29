@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `SQLiteReplayProtector` for durable same-host executor replay protection across process restarts and multiple processes, with atomic nonce admission and bounded retention.
 - Added full-stack integration coverage from the official MCP Python SDK through the stdio adapter, Gateway authorization/confirmation path, authenticated Unix-socket executor client/server, capability handler and signed response verification.
 - Added a reusable authenticated Unix-socket executor server SDK with exact capability allowlisting, typed invocation metadata, HMAC-SHA256 request verification, replay protection and request-bound signed responses.
 - Added bounded executor request/response framing, per-connection timeouts, isolated connection failures and secure `0600` Unix-socket lifecycle management below a private owner-controlled directory.
@@ -18,6 +19,7 @@
 
 ### Security
 
+- Durable replay state uses the same private owner-controlled path checks as other security-sensitive SQLite state and rejects concurrent reuse of the same authenticated nonce across processes.
 - The systemd example never invokes a shell, never accepts arbitrary unit names, validates the authenticated resource against the requested public service alias and suppresses command stderr from executor errors.
 - Executor servers refuse pre-existing socket paths, pin the private parent directory identity and remove their socket only when the path still refers to the exact socket inode they created.
 - Unauthenticated, malformed, replayed, unsupported-capability and handler-failure requests receive no signed success response, preserving the gateway's uncertain-outcome semantics for mutations.

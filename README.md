@@ -130,7 +130,7 @@ The built-in stdio transport uses newline-delimited JSON-RPC and enforces a boun
 The reusable Unix-socket executor server verifies the gateway envelope before dispatching an exact allowlisted capability. Handlers receive an `ExecutorInvocation` containing authenticated gateway metadata plus the service-specific request object:
 
 ```python
-from secure_ops_gateway import UnixSocketExecutorServer
+from secure_ops_gateway import SQLiteReplayProtector, UnixSocketExecutorServer
 
 KEY = b"replace-with-at-least-32-random-bytes"
 
@@ -141,10 +141,14 @@ def status(invocation):
         "action": invocation.request["action"],
     }
 
+replay = SQLiteReplayProtector(
+    "/var/lib/secure-ops/demo/replay.sqlite3"
+)
 server = UnixSocketExecutorServer(
     "/run/secure-ops/demo/executor.sock",
     KEY,
     {"demo.status": status},
+    replay_protector=replay,
 )
 server.serve_forever()
 ```
@@ -153,7 +157,7 @@ The server accepts one authenticated request per connection, verifies HMAC-SHA25
 
 The socket must live below a private directory owned by the executor user. The server refuses to overwrite any pre-existing path, creates the socket with mode `0600`, pins its parent-directory identity, and removes the socket on shutdown only if the path still refers to the exact socket inode it created.
 
-The built-in `UnixSocketExecutorClient` rejects unsigned responses, wrong request IDs, reflected request envelopes and replayed responses. The built-in `ReplayCache` is process-local; use a shared/durable replay protector when executors are replicated or must retain replay state across restarts. Handler code remains responsible for validating its capability-specific `invocation.request` fields and for avoiding generic shell surfaces.
+The built-in `UnixSocketExecutorClient` rejects unsigned responses, wrong request IDs, reflected request envelopes and replayed responses. `ReplayCache` remains a lightweight process-local option. `SQLiteReplayProtector` provides durable same-host replay protection across restarts and multiple processes using a private SQLite state file with atomic nonce admission. Multi-host deployments still need a distributed replay backend. Handler code remains responsible for validating its capability-specific `invocation.request` fields and for avoiding generic shell surfaces.
 
 Integration coverage includes the official MCP Python SDK driving a real stdio subprocess through `MCPAdapter`, `Gateway`, the authenticated Unix-socket executor channel and an allowlisted executor handler, including the explicit-confirmation retry path.
 
@@ -191,7 +195,7 @@ The `invoke_started` audit event is fail-closed: if it cannot be written, the ex
 
 `0.1.1` is a security-hardening alpha release of the standalone public project. The API and configuration schemas may change before `1.0`.
 
-Near-term work includes packaging example executors, durable replay backends, structured observability, deployment documentation and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
+Near-term work includes shared admission backends, structured observability, deployment documentation, distributed replay backends and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
 
 ## Security
 

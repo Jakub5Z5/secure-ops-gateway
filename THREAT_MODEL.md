@@ -41,7 +41,7 @@ The design considers:
 - The operating system enforces user ownership, Unix socket permissions and file permissions.
 - Processes running under the same operating-system UID are within one local trust domain. A hostile process with the same UID can generally inspect or modify that user's state and is not isolated by file ownership alone.
 - A process with root-level control over the host is outside the protection boundary.
-- Multi-process or multi-host deployments provide shared replay/rate-limit backends when process-local controls are insufficient.
+- Multi-process same-host executor deployments may use the built-in SQLite replay backend; multi-host deployments provide distributed replay/rate-limit backends when local controls are insufficient.
 
 ## Fail-closed behavior
 
@@ -64,7 +64,7 @@ The core does not currently provide:
 
 - end-user authentication transports;
 - host sandboxing for executors;
-- durable distributed replay protection;
+- distributed multi-host replay protection;
 - fleet-wide distributed rate limiting;
 - secret storage or key rotation;
 - tamper-evident remote audit storage.

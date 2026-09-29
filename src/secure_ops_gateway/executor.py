@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import socket
+import sqlite3
 import stat
 import time
 from contextlib import contextmanager
@@ -19,6 +20,7 @@ from .paths import (
     SecurePathError,
     prepare_private_parent,
     private_parent_identity,
+    reject_symlink_leaf,
     verify_private_parent_identity,
 )
 
@@ -130,6 +132,160 @@ class ReplayCache:
             if nonce in self._seen:
                 raise ExecutorError("authenticated envelope replayed")
             self._seen[nonce] = timestamp
+
+
+class SQLiteReplayProtector:
+    """Durable same-host replay protection backed by SQLite.
+
+    The database may be shared by multiple executor processes using the same
+    authenticated channel. Nonce admission is serialized with ``BEGIN
+    IMMEDIATE`` and a unique primary key, so concurrent attempts to accept the
+    same nonce cannot both succeed. The state file uses the same private-path
+    ownership and replacement checks as other security-sensitive gateway state.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_age_seconds: int = 60,
+        timeout_seconds: float = 5.0,
+    ) -> None:
+        if (
+            isinstance(max_age_seconds, bool)
+            or not isinstance(max_age_seconds, int)
+            or max_age_seconds < 1
+        ):
+            raise ValueError("max_age_seconds must be a positive integer")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds must be positive")
+        try:
+            self.path = prepare_private_parent(path)
+            self._parent_identity = private_parent_identity(self.path)
+        except SecurePathError as exc:
+            raise ExecutorError("replay database parent is unsafe") from exc
+        self.max_age_seconds = max_age_seconds
+        self.timeout_seconds = float(timeout_seconds)
+        self._ensure_private_database_file()
+        with self._database() as db:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS replay_nonces (
+                    nonce TEXT PRIMARY KEY,
+                    envelope_timestamp INTEGER NOT NULL
+                )"""
+            )
+            db.execute(
+                """CREATE INDEX IF NOT EXISTS replay_nonces_timestamp_idx
+                   ON replay_nonces(envelope_timestamp)"""
+            )
+        self._enforce_private_permissions()
+        self.cleanup()
+
+    def _ensure_private_database_file(self) -> None:
+        try:
+            prepare_private_parent(self.path)
+            verify_private_parent_identity(self.path, self._parent_identity)
+            reject_symlink_leaf(self.path)
+        except SecurePathError as exc:
+            raise ExecutorError("replay database path is unsafe") from exc
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(self.path, flags, 0o600)
+        except FileExistsError:
+            try:
+                reject_symlink_leaf(self.path)
+                self._enforce_private_permissions()
+            except SecurePathError as exc:
+                raise ExecutorError("replay database path is unsafe") from exc
+        except OSError as exc:
+            raise ExecutorError("cannot create replay database safely") from exc
+        else:
+            os.close(fd)
+
+    def _enforce_private_permissions(self) -> None:
+        try:
+            prepare_private_parent(self.path)
+            verify_private_parent_identity(self.path, self._parent_identity)
+            reject_symlink_leaf(self.path)
+            os.chmod(self.path, 0o600, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except (OSError, SecurePathError) as exc:
+            raise ExecutorError("replay database path is unsafe") from exc
+
+    def _connect(self):
+        try:
+            prepare_private_parent(self.path)
+            verify_private_parent_identity(self.path, self._parent_identity)
+            reject_symlink_leaf(self.path)
+        except SecurePathError as exc:
+            raise ExecutorError("replay database path is unsafe") from exc
+        self._enforce_private_permissions()
+        connection = sqlite3.connect(self.path, timeout=self.timeout_seconds)
+        try:
+            reject_symlink_leaf(self.path)
+            self._enforce_private_permissions()
+        except Exception:
+            connection.close()
+            raise
+        return connection
+
+    @contextmanager
+    def _database(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    def cleanup(self, *, now: int | None = None) -> int:
+        current = int(time.time()) if now is None else int(now)
+        cutoff = current - self.max_age_seconds
+        with self._database() as db:
+            cursor = db.execute(
+                "DELETE FROM replay_nonces WHERE envelope_timestamp < ?",
+                (cutoff,),
+            )
+            return cursor.rowcount
+
+    def accept(
+        self,
+        nonce: str,
+        timestamp: int,
+        *,
+        now: int | None = None,
+    ) -> None:
+        if not isinstance(nonce, str) or not _NONCE.fullmatch(nonce):
+            raise ExecutorError(
+                "executor nonce must be 32 lowercase hexadecimal characters"
+            )
+        if isinstance(timestamp, bool) or not isinstance(timestamp, int):
+            raise ExecutorError("executor timestamp must be an integer")
+        current = int(time.time()) if now is None else int(now)
+        cutoff = current - self.max_age_seconds
+        with self._database() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "DELETE FROM replay_nonces WHERE envelope_timestamp < ?",
+                (cutoff,),
+            )
+            try:
+                db.execute(
+                    "INSERT INTO replay_nonces(nonce, envelope_timestamp) VALUES (?, ?)",
+                    (nonce, timestamp),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ExecutorError("authenticated envelope replayed") from exc
+        self._enforce_private_permissions()
 
 
 def verify_envelope(
