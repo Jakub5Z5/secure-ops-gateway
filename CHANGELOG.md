@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added full-stack integration coverage from the official MCP Python SDK through the stdio adapter, Gateway authorization/confirmation path, authenticated Unix-socket executor client/server, capability handler and signed response verification.
 - Added a reusable authenticated Unix-socket executor server SDK with exact capability allowlisting, typed invocation metadata, HMAC-SHA256 request verification, replay protection and request-bound signed responses.
 - Added bounded executor request/response framing, per-connection timeouts, isolated connection failures and secure `0600` Unix-socket lifecycle management below a private owner-controlled directory.
 - Added a dual-era MCP stdio adapter supporting the current stateless `2026-07-28` protocol and the latest handshake-era `2025-11-25` protocol.
