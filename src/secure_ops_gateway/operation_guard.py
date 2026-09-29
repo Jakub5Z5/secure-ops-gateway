@@ -157,7 +157,17 @@ class SQLiteOperationGuard:
     def cleanup(self, *, now: int | None = None) -> int:
         current = int(time.time()) if now is None else int(now)
         cutoff = current - self.retention_seconds
+        stale_before = current - self.execution_stale_seconds
         with self._database() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                """UPDATE confirmations
+                   SET status='uncertain', completed_at=?
+                   WHERE status='executing'
+                     AND started_at IS NOT NULL
+                     AND started_at < ?""",
+                (current, stale_before),
+            )
             cursor = db.execute(
                 """DELETE FROM confirmations
                    WHERE
