@@ -91,6 +91,82 @@ def test_catalog_filters_unauthorized_enum_values():
     assert catalog[0]["arguments"]["service"]["enum"] == ["api"]
 
 
+def test_catalog_hides_correlated_enum_combinations_it_cannot_represent():
+    tools = {
+        "schema": 1,
+        "tools": {
+            "demo.deploy": {
+                "capability": "demo.status",
+                "permission": "demo.restart",
+                "resource": "demo:{region}:{service}",
+                "risk": "write",
+                "confirmation": "none",
+                "allow_unconfirmed_mutation": True,
+                "arguments": {
+                    "region": {
+                        "type": "string",
+                        "required": True,
+                        "enum": ["eu", "us"],
+                    },
+                    "service": {
+                        "type": "string",
+                        "required": True,
+                        "enum": ["api", "db"],
+                    },
+                },
+                "request": {
+                    "action": "deploy",
+                    "region": "$arg:region",
+                    "service": "$arg:service",
+                },
+            }
+        },
+    }
+    policy = {
+        "schema": 1,
+        "roles": {
+            "limited": {
+                "permissions": ["demo.restart"],
+                "max_risk": "write",
+            }
+        },
+        "bindings": {
+            "limited-user": [
+                {
+                    "role": "limited",
+                    "resources": ["demo:eu:api", "demo:us:db"],
+                }
+            ]
+        },
+    }
+    gateway = Gateway(
+        tools=tools,
+        executors=EXECUTORS,
+        policy=policy,
+        identity_resolver=IDENTITIES,
+        executor_call=lambda _route, _payload: {"ok": True},
+    )
+    source = SourceContext("test", "limited-source", "catalog-correlated")
+
+    # Independent enum filtering would incorrectly advertise all four
+    # region/service combinations. The current schema cannot express only the
+    # two diagonal pairs, so the tool must be omitted from discovery.
+    assert gateway.catalog(source) == []
+
+    assert gateway.invoke(
+        SourceContext("test", "limited-source", "invoke-correlated-ok"),
+        "demo.deploy",
+        {"region": "eu", "service": "api"},
+    ) == {"ok": True}
+
+    with pytest.raises(AuthorizationDenied):
+        gateway.invoke(
+            SourceContext("test", "limited-source", "invoke-correlated-denied"),
+            "demo.deploy",
+            {"region": "eu", "service": "db"},
+        )
+
+
 def test_authorization_denial_is_audited():
     records = []
     gateway = gateway_for(lambda _route, _payload: {"ok": True}, audit_sink=records.append)
