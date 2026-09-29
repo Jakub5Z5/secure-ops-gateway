@@ -3,13 +3,24 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import socket
+import stat
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 import threading
-from typing import Callable, Protocol
+from typing import Callable, Mapping, Protocol
+
+from .paths import (
+    SecurePathError,
+    prepare_private_parent,
+    private_parent_identity,
+    verify_private_parent_identity,
+)
 
 
 class ExecutorError(RuntimeError):
@@ -18,6 +29,7 @@ class ExecutorError(RuntimeError):
 
 _NONCE = re.compile(r"^[0-9a-f]{32}$")
 _PURPOSES = {"request", "response"}
+_CAPABILITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def canonical_json(value: dict) -> bytes:
@@ -237,6 +249,329 @@ def verify_response_envelope(
     if not isinstance(response, dict):
         raise ExecutorError("executor response payload must be an object")
     return response
+
+
+@dataclass(frozen=True)
+class ExecutorInvocation:
+    """Validated request passed to an executor capability handler.
+
+    Every field in this object came from an authenticated gateway envelope.
+    The executor still treats the nested service-specific ``request`` object as
+    untrusted application input and should validate it according to the
+    capability's own contract.
+    """
+
+    request_id: str
+    principal_id: str
+    source_provider: str
+    source_subject: str
+    capability: str
+    permission: str
+    risk: str
+    resource: str
+    request: dict
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "ExecutorInvocation":
+        expected = {
+            "schema",
+            "request_id",
+            "principal_id",
+            "source",
+            "capability",
+            "permission",
+            "risk",
+            "resource",
+            "request",
+        }
+        if not isinstance(payload, dict) or set(payload) != expected:
+            raise ExecutorError("invalid executor request payload")
+        if payload.get("schema") != 1:
+            raise ExecutorError("unsupported executor request payload")
+
+        source = payload.get("source")
+        if not isinstance(source, dict) or set(source) != {"provider", "subject"}:
+            raise ExecutorError("invalid executor source metadata")
+
+        values = {
+            "request_id": payload.get("request_id"),
+            "principal_id": payload.get("principal_id"),
+            "source_provider": source.get("provider"),
+            "source_subject": source.get("subject"),
+            "capability": payload.get("capability"),
+            "permission": payload.get("permission"),
+            "risk": payload.get("risk"),
+            "resource": payload.get("resource"),
+        }
+        if not all(isinstance(value, str) and value for value in values.values()):
+            raise ExecutorError("invalid executor request metadata")
+        if not _CAPABILITY.fullmatch(values["capability"]):
+            raise ExecutorError("invalid executor capability")
+        if values["risk"] not in {"read", "write", "privileged"}:
+            raise ExecutorError("invalid executor risk")
+        request = payload.get("request")
+        if not isinstance(request, dict):
+            raise ExecutorError("executor request body must be an object")
+
+        return cls(request=request, **values)
+
+
+class CapabilityRouter:
+    """Exact-match allowlist from capability names to executor handlers."""
+
+    def __init__(self, handlers: Mapping[str, Callable[[ExecutorInvocation], dict]]):
+        if not isinstance(handlers, Mapping) or not handlers:
+            raise ValueError("executor handlers must be a non-empty mapping")
+        validated: dict[str, Callable[[ExecutorInvocation], dict]] = {}
+        for capability, handler in handlers.items():
+            if not isinstance(capability, str) or not _CAPABILITY.fullmatch(capability):
+                raise ValueError("invalid executor capability name")
+            if not callable(handler):
+                raise TypeError(f"handler for {capability!r} must be callable")
+            validated[capability] = handler
+        self._handlers = validated
+
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        return tuple(sorted(self._handlers))
+
+    def dispatch(self, invocation: ExecutorInvocation) -> dict:
+        if not isinstance(invocation, ExecutorInvocation):
+            raise TypeError("invocation must be ExecutorInvocation")
+        try:
+            handler = self._handlers[invocation.capability]
+        except KeyError as exc:
+            raise ExecutorError("unsupported executor capability") from exc
+        response = handler(invocation)
+        if not isinstance(response, dict):
+            raise ExecutorError("executor handler must return an object")
+        return response
+
+
+class UnixSocketExecutorServer:
+    """Authenticated single-request-per-connection Unix socket executor.
+
+    The server owns only an exact capability allowlist. It verifies the
+    gateway's HMAC-authenticated request envelope with replay protection,
+    validates the common executor payload, dispatches one handler, and returns
+    a response envelope cryptographically bound to the request ID.
+
+    A failed or unauthenticated request receives no signed response. This is
+    deliberate: for a mutating operation the gateway must treat transport or
+    handler failure as an uncertain outcome rather than as a successful
+    operation with an error-looking response body.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        key: bytes,
+        handlers: Mapping[str, Callable[[ExecutorInvocation], dict]],
+        *,
+        replay_protector: ReplayProtector | None = None,
+        max_skew_seconds: int = 30,
+        max_request_bytes: int = 1024 * 1024,
+        max_response_bytes: int = 1024 * 1024,
+        connection_timeout_seconds: float = 10.0,
+        accept_poll_seconds: float = 0.25,
+        backlog: int = 16,
+        error_handler: Callable[[Exception], None] | None = None,
+    ):
+        if os.name != "posix":
+            raise ExecutorError("Unix socket executor server requires a POSIX platform")
+        if not isinstance(key, (bytes, bytearray)) or len(key) < 32:
+            raise ExecutorError("executor key must contain at least 32 bytes")
+        if (
+            isinstance(max_skew_seconds, bool)
+            or not isinstance(max_skew_seconds, int)
+            or max_skew_seconds < 0
+        ):
+            raise ValueError("max_skew_seconds must be a non-negative integer")
+        for name, value in {
+            "max_request_bytes": max_request_bytes,
+            "max_response_bytes": max_response_bytes,
+            "backlog": backlog,
+        }.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        for name, value in {
+            "connection_timeout_seconds": connection_timeout_seconds,
+            "accept_poll_seconds": accept_poll_seconds,
+        }.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0
+            ):
+                raise ValueError(f"{name} must be positive")
+        if error_handler is not None and not callable(error_handler):
+            raise TypeError("error_handler must be callable")
+
+        try:
+            self.path = prepare_private_parent(path)
+            self._parent_identity = private_parent_identity(self.path)
+        except SecurePathError as exc:
+            raise ExecutorError("executor socket parent is unsafe") from exc
+        self.key = bytes(key)
+        self.router = CapabilityRouter(handlers)
+        self.replay_protector = (
+            ReplayCache() if replay_protector is None else replay_protector
+        )
+        self.max_skew_seconds = max_skew_seconds
+        self.max_request_bytes = max_request_bytes
+        self.max_response_bytes = max_response_bytes
+        self.connection_timeout_seconds = float(connection_timeout_seconds)
+        self.accept_poll_seconds = float(accept_poll_seconds)
+        self.backlog = backlog
+        self.error_handler = error_handler
+        self._serve_lock = threading.Lock()
+
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        return self.router.capabilities
+
+    def handle_envelope(self, envelope: dict) -> dict:
+        payload = verify_envelope(
+            envelope,
+            self.key,
+            replay_protector=self.replay_protector,
+            expected_purpose="request",
+            max_skew_seconds=self.max_skew_seconds,
+        )
+        invocation = ExecutorInvocation.from_payload(payload)
+        response = self.router.dispatch(invocation)
+        return sign_response(invocation.request_id, response, self.key)
+
+    def _report_error(self, exc: Exception) -> None:
+        if self.error_handler is None:
+            return
+        try:
+            self.error_handler(exc)
+        except Exception:
+            pass
+
+    def _read_request(self, connection: socket.socket) -> dict:
+        chunks = bytearray()
+        while True:
+            chunk = connection.recv(min(65536, self.max_request_bytes + 1))
+            if not chunk:
+                raise ExecutorError("executor request was not newline terminated")
+            chunks.extend(chunk)
+            newline = chunks.find(b"\n")
+            if newline >= 0:
+                if newline > self.max_request_bytes:
+                    raise ExecutorError("executor request too large")
+                line = bytes(chunks[:newline])
+                break
+            if len(chunks) > self.max_request_bytes:
+                raise ExecutorError("executor request too large")
+        try:
+            message = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ExecutorError("executor request is invalid JSON") from exc
+        if not isinstance(message, dict):
+            raise ExecutorError("executor request envelope must be an object")
+        return message
+
+    def _serve_connection(self, connection: socket.socket) -> None:
+        connection.settimeout(self.connection_timeout_seconds)
+        envelope = self._read_request(connection)
+        response = self.handle_envelope(envelope)
+        raw = canonical_json(response) + b"\n"
+        if len(raw) > self.max_response_bytes:
+            raise ExecutorError("executor response too large")
+        connection.sendall(raw)
+
+    @contextmanager
+    def _listener(self):
+        try:
+            verify_private_parent_identity(self.path, self._parent_identity)
+        except SecurePathError as exc:
+            raise ExecutorError("executor socket parent was replaced") from exc
+        try:
+            metadata = os.lstat(self.path)
+        except FileNotFoundError:
+            metadata = None
+        if metadata is not None:
+            raise ExecutorError("executor socket path already exists")
+
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        socket_identity = None
+        try:
+            listener.bind(str(self.path))
+            metadata = os.lstat(self.path)
+            if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                raise ExecutorError("executor socket path is unsafe")
+            socket_identity = (metadata.st_dev, metadata.st_ino, metadata.st_uid)
+            os.chmod(self.path, 0o600, follow_symlinks=False)
+            metadata = os.lstat(self.path)
+            if (
+                not stat.S_ISSOCK(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino, metadata.st_uid) != socket_identity
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+            ):
+                raise ExecutorError("executor socket path is unsafe")
+            listener.listen(self.backlog)
+            listener.settimeout(self.accept_poll_seconds)
+            yield listener
+        finally:
+            listener.close()
+            if socket_identity is not None:
+                try:
+                    verify_private_parent_identity(self.path, self._parent_identity)
+                    current = os.lstat(self.path)
+                except (FileNotFoundError, SecurePathError):
+                    current = None
+                if (
+                    current is not None
+                    and stat.S_ISSOCK(current.st_mode)
+                    and (current.st_dev, current.st_ino, current.st_uid) == socket_identity
+                ):
+                    os.unlink(self.path)
+
+    def serve_once(self) -> None:
+        """Bind the socket, process one connection, and clean up the socket path."""
+
+        if not self._serve_lock.acquire(blocking=False):
+            raise ExecutorError("executor server is already running")
+        try:
+            with self._listener() as listener:
+                listener.settimeout(self.connection_timeout_seconds)
+                connection, _ = listener.accept()
+                with connection:
+                    try:
+                        self._serve_connection(connection)
+                    except Exception as exc:
+                        self._report_error(exc)
+        finally:
+            self._serve_lock.release()
+
+    def serve_forever(self, *, stop_event=None) -> None:
+        """Serve connections until ``stop_event`` is set.
+
+        ``stop_event`` may be any object exposing ``is_set()``. When omitted,
+        the server runs until interrupted. Per-connection errors are isolated
+        and reported through ``error_handler`` without stopping the listener.
+        """
+
+        if stop_event is not None and not callable(getattr(stop_event, "is_set", None)):
+            raise TypeError("stop_event must expose is_set()")
+        if not self._serve_lock.acquire(blocking=False):
+            raise ExecutorError("executor server is already running")
+        try:
+            with self._listener() as listener:
+                while stop_event is None or not stop_event.is_set():
+                    try:
+                        connection, _ = listener.accept()
+                    except socket.timeout:
+                        continue
+                    with connection:
+                        try:
+                            self._serve_connection(connection)
+                        except Exception as exc:
+                            self._report_error(exc)
+        finally:
+            self._serve_lock.release()
 
 
 @dataclass(frozen=True)

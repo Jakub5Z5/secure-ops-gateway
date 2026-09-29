@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added a reusable authenticated Unix-socket executor server SDK with exact capability allowlisting, typed invocation metadata, HMAC-SHA256 request verification, replay protection and request-bound signed responses.
+- Added bounded executor request/response framing, per-connection timeouts, isolated connection failures and secure `0600` Unix-socket lifecycle management below a private owner-controlled directory.
 - Added a dual-era MCP stdio adapter supporting the current stateless `2026-07-28` protocol and the latest handshake-era `2025-11-25` protocol.
 - Added `server/discover`, `initialize`, `tools/list`, `tools/call` and legacy `ping` handling over newline-delimited JSON-RPC.
 - Added MCP tool-result translation with structured JSON output and explicit confirmation challenge propagation.
@@ -12,6 +14,8 @@
 
 ### Security
 
+- Executor servers refuse pre-existing socket paths, pin the private parent directory identity and remove their socket only when the path still refers to the exact socket inode they created.
+- Unauthenticated, malformed, replayed, unsupported-capability and handler-failure requests receive no signed success response, preserving the gateway's uncertain-outcome semantics for mutations.
 - MCP requests cannot choose a gateway principal. The adapter requires a separately supplied trusted transport provider/subject and mints gateway request IDs server-side.
 - Authorization-filtered gateway catalogs are exposed as private, immediately stale MCP tool lists to avoid cross-identity caching.
 - Unknown/internal failures are mapped without leaking authorization policy details or arbitrary exception text.

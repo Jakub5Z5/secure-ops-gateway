@@ -117,7 +117,7 @@ See [`examples/config`](examples/config) for a complete minimal configuration.
 
 ## MCP transport adapter
 
-The development branch includes a stdio MCP adapter that serves the current stateless `2026-07-28` protocol and the latest handshake-era `2025-11-25` protocol. It implements `server/discover`, `initialize`, `tools/list`, `tools/call` and legacy `ping` without adding runtime dependencies.
+The project includes a stdio MCP adapter that serves the current stateless `2026-07-28` protocol and the latest handshake-era `2025-11-25` protocol. It implements `server/discover`, `initialize`, `tools/list`, `tools/call` and legacy `ping` without adding runtime dependencies.
 
 Transport identity remains outside the MCP request body. An embedding transport supplies an `MCPTrustedSource` containing the authenticated provider and subject; the adapter creates `SourceContext` objects from that trusted metadata and generates gateway request IDs server-side. Client-supplied `principal` fields are never used for gateway identity.
 
@@ -125,26 +125,35 @@ Transport identity remains outside the MCP request body. An embedding transport 
 
 The built-in stdio transport uses newline-delimited JSON-RPC and enforces a bounded request-frame size. It writes protocol messages only to stdout; embedding applications should send diagnostics to stderr.
 
-## Executor verification
+## Executor SDK
 
-Executor servers must verify every request envelope with replay protection and return a signed response envelope bound to the same request ID:
+The reusable Unix-socket executor server verifies the gateway envelope before dispatching an exact allowlisted capability. Handlers receive an `ExecutorInvocation` containing authenticated gateway metadata plus the service-specific request object:
 
 ```python
-from secure_ops_gateway.executor import ReplayCache, sign_response, verify_envelope
+from secure_ops_gateway import UnixSocketExecutorServer
 
-replay = ReplayCache(max_age_seconds=60)
-payload = verify_envelope(
-    envelope,
-    key,
-    replay_protector=replay,
-    expected_purpose="request",
+KEY = b"replace-with-at-least-32-random-bytes"
+
+def status(invocation):
+    return {
+        "ok": True,
+        "resource": invocation.resource,
+        "action": invocation.request["action"],
+    }
+
+server = UnixSocketExecutorServer(
+    "/run/secure-ops/demo/executor.sock",
+    KEY,
+    {"demo.status": status},
 )
-
-result = {"ok": True}
-response_envelope = sign_response(payload["request_id"], result, key)
+server.serve_forever()
 ```
 
-The built-in Unix-socket client rejects unsigned responses, wrong request IDs, reflected request envelopes and replayed responses. The built-in cache is process-local. Use a shared/durable replay protector when executors are replicated or must retain replay state across restarts.
+The server accepts one authenticated request per connection, verifies HMAC-SHA256 with replay protection, validates the common executor payload, dispatches only exact registered capability names, and returns a signed response bound to the originating request ID. Request and response sizes and connection time are bounded. Per-connection failures do not terminate `serve_forever()`.
+
+The socket must live below a private directory owned by the executor user. The server refuses to overwrite any pre-existing path, creates the socket with mode `0600`, pins its parent-directory identity, and removes the socket on shutdown only if the path still refers to the exact socket inode it created.
+
+The built-in `UnixSocketExecutorClient` rejects unsigned responses, wrong request IDs, reflected request envelopes and replayed responses. The built-in `ReplayCache` is process-local; use a shared/durable replay protector when executors are replicated or must retain replay state across restarts. Handler code remains responsible for validating its capability-specific `invocation.request` fields and for avoiding generic shell surfaces.
 
 ## State-path safety
 
@@ -172,7 +181,7 @@ The `invoke_started` audit event is fail-closed: if it cannot be written, the ex
 
 `0.1.1` is a security-hardening alpha release of the standalone public project. The API and configuration schemas may change before `1.0`.
 
-Near-term work includes a reusable executor SDK, packaging of example executors, durable replay backends, structured observability, deployment documentation and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
+Near-term work includes packaging example executors, durable replay backends, structured observability, deployment documentation and richer MCP confirmation/elicitation integration. See `CHANGELOG.md` for security changes since 0.1.0.
 
 ## Security
 
