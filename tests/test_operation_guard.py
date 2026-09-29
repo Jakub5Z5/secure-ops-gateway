@@ -76,6 +76,40 @@ def test_stale_executing_confirmation_becomes_uncertain(tmp_path, monkeypatch):
         guard.begin(token, CONTEXT, BASE_TOOL)
 
 
+
+def test_cleanup_recovers_abandoned_execution_after_restart(tmp_path, monkeypatch):
+    clock = {"now": 1000}
+    monkeypatch.setattr("secure_ops_gateway.operation_guard.time.time", lambda: clock["now"])
+    path = tmp_path / "operations.sqlite3"
+    guard = SQLiteOperationGuard(
+        path,
+        execution_stale_seconds=5,
+        retention_seconds=10,
+    )
+    token = guard.issue(CONTEXT, BASE_TOOL)["confirmation_token"]
+    assert guard.begin(token, CONTEXT, BASE_TOOL)["execute"] is True
+
+    # Simulate a gateway process disappearing after reserving the operation.
+    # A fresh guard instance performs startup cleanup and must persist the
+    # abandoned execution as uncertain before any client asks for its status.
+    clock["now"] = 1006
+    recovered = SQLiteOperationGuard(
+        path,
+        execution_stale_seconds=5,
+        retention_seconds=10,
+    )
+    assert recovered.status(token, CONTEXT)["status"] == "uncertain"
+    with pytest.raises(ConfirmationError, match="uncertain"):
+        recovered.begin(token, CONTEXT, BASE_TOOL)
+
+    # Retention is measured from the recovery timestamp, after which cleanup
+    # may remove the terminal uncertain record normally.
+    clock["now"] = 1017
+    assert recovered.cleanup() == 1
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("SELECT COUNT(*) FROM confirmations").fetchone()[0] == 0
+
+
 def test_cleanup_removes_old_terminal_records(tmp_path, monkeypatch):
     clock = {"now": 1000}
     monkeypatch.setattr("secure_ops_gateway.operation_guard.time.time", lambda: clock["now"])
