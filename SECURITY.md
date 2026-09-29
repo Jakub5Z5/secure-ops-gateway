@@ -44,4 +44,4 @@ Do not place security-sensitive state files directly in `/tmp` or another direct
 
 ## Resource exhaustion
 
-The default gateway admission controller limits per-authenticated-source call rate and concurrent work before identity resolution, so unknown-but-authenticated sources are covered as well. These limits are process-local. Replicated deployments that need a global denial-of-service boundary should use a shared limiter and enforce transport-level request-size and connection limits as well.
+The default gateway admission controller limits per-authenticated-source call rate and concurrent work before identity resolution, so unknown-but-authenticated sources are covered as well. Requests rejected by admission are not written to the normal per-request audit sink, preventing an attacker from turning rate-limit denials into unbounded audit-log growth; expose aggregate admission metrics through a separate bounded monitoring path if required. These limits are process-local. Replicated deployments that need a global denial-of-service boundary should use a shared limiter and enforce transport-level request-size and connection limits as well.

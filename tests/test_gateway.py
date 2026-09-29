@@ -271,3 +271,28 @@ def test_identity_denied_calls_are_rate_limited_before_resolution():
         gateway.invoke(SourceContext("test", "unknown-source", "deny-1"), "demo.status")
     with pytest.raises(RateLimitExceeded):
         gateway.invoke(SourceContext("test", "unknown-source", "deny-2"), "demo.status")
+
+
+def test_rate_limited_identity_denials_do_not_amplify_audit_logs():
+    from secure_ops_gateway.admission import GatewayAdmissionController, RateLimitExceeded
+
+    events = []
+    gateway = gateway_for(
+        lambda _route, _payload: {"ok": True},
+        audit_sink=lambda record: events.append(record["event"]),
+        admission_controller=GatewayAdmissionController(
+            max_calls_per_window=1,
+            window_seconds=60,
+            max_inflight_global=2,
+            max_inflight_per_source=1,
+        ),
+    )
+    source = SourceContext("test", "unknown-source", "deny-audit-1")
+    with pytest.raises(IdentityDenied):
+        gateway.invoke(source, "demo.status")
+    assert events == ["identity_denied"]
+
+    for request_id in ("deny-audit-2", "deny-audit-3"):
+        with pytest.raises(RateLimitExceeded):
+            gateway.invoke(SourceContext("test", "unknown-source", request_id), "demo.status")
+    assert events == ["identity_denied"]

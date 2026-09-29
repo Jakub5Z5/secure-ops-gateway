@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import authorization, identity, registry
-from .admission import AdmissionError, GatewayAdmissionController
+from .admission import GatewayAdmissionController
 from .operation_guard import ConfirmationError
 
 
@@ -210,11 +210,7 @@ class Gateway:
 
     def catalog(self, source: identity.SourceContext) -> list[dict]:
         self._validate_source(source)
-        try:
-            lease = self.admission_controller.acquire(source)
-        except AdmissionError:
-            self._audit("admission_denied", source, best_effort=True)
-            raise
+        lease = self.admission_controller.acquire(source)
         try:
             context = self._resolve_context(source)
             visible = []
@@ -247,11 +243,7 @@ class Gateway:
         confirmation_token: str | None = None,
     ) -> dict:
         self._validate_source(source)
-        try:
-            lease = self.admission_controller.acquire(source)
-        except AdmissionError:
-            self._audit("admission_denied", source, best_effort=True)
-            raise
+        lease = self.admission_controller.acquire(source)
         try:
             context = self._resolve_context(source)
             return self._invoke_admitted(
