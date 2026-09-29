@@ -1,6 +1,6 @@
-# Changelog
+﻿# Changelog
 
-## 0.1.1 - unreleased
+## 0.1.1 - 2026-09-29
 
 Security hardening release prepared after the public 0.1.0 audit.
 
